@@ -171,6 +171,7 @@ pub struct DrawerApp {
     hover_alpha: HashMap<String, f32>,
     last_tick: Instant,
     frame_interval: std::time::Duration,
+    shown_at: Option<Instant>,
 }
 
 fn hwnd_of(window: &Window) -> HWND {
@@ -310,6 +311,7 @@ impl DrawerApp {
             hover_alpha: HashMap::new(),
             last_tick: Instant::now(),
             frame_interval,
+            shown_at: None,
         };
         app.request(category, event_loop);
         app
@@ -752,6 +754,7 @@ impl DrawerApp {
                 self.set_pos(self.layout.shown_x, y);
                 if t >= 1.0 {
                     self.state = DrawerState::Shown;
+                    self.shown_at = Some(now);
                     force_foreground(self.hwnd);
                 } else {
                     needs_more_frames = true;
@@ -793,7 +796,15 @@ impl DrawerApp {
             WindowEvent::RedrawRequested => self.render(),
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
-                if !focused && matches!(self.state, DrawerState::Shown) {
+                // Windows can deliver a stray/duplicate focus-lost message in
+                // the first moment after we forcibly grab foreground focus
+                // (see `force_foreground`); a short grace period keeps that
+                // from instantly undoing the show before the user even sees
+                // it, while still auto-hiding promptly on a real click-away.
+                let past_grace = self
+                    .shown_at
+                    .is_some_and(|t| t.elapsed().as_millis() > 200);
+                if !focused && past_grace && matches!(self.state, DrawerState::Shown) {
                     self.state = DrawerState::SlidingDown { start: Instant::now() };
                     self.schedule_next_frame(event_loop);
                     self.render();

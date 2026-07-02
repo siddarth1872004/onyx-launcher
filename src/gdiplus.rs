@@ -247,35 +247,6 @@ impl Surface {
         }
     }
 
-    pub fn measure_text_width(&mut self, text: &str, size_px: f32) -> f32 {
-        let font = self.font_for(size_px);
-        let format = self.format_near;
-        unsafe {
-            let layout = RectF {
-                X: 0.0,
-                Y: 0.0,
-                Width: 10_000.0,
-                Height: 200.0,
-            };
-            let mut bounds = RectF::default();
-            let mut fitted = 0i32;
-            let mut lines = 0i32;
-            let wtext = wide(text);
-            GdipMeasureString(
-                self.gp_graphics,
-                PCWSTR(wtext.as_ptr()),
-                -1,
-                font,
-                &layout,
-                format,
-                &mut bounds,
-                &mut fitted,
-                &mut lines,
-            );
-            bounds.Width
-        }
-    }
-
     /// Draws a straight (non-premultiplied), RGBA-ordered image (as produced
     /// by `icon::extract_icon_bgra`, which is already in the byte order GDI+
     /// wants) scaled into `dst`. Takes the pixels pre-converted rather than

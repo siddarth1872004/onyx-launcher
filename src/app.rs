@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::net::TcpListener;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,12 +25,12 @@ use crate::config::Config;
 use crate::gdiplus::{Renderer, TextAlign};
 use crate::geometry::{self, DrawerLayout};
 use crate::icon;
-use crate::ipc;
 
-/// Wakes the event loop from another thread (the IPC listener) without
-/// needing any GPU/egui machinery.
+/// Delivered from the single-instance listener thread when another launch of
+/// the same category pulses the toggle event, i.e. the user clicked the
+/// taskbar pin again while the drawer is already up and wants it closed.
 pub enum UserEvent {
-    Wake,
+    Toggle,
 }
 
 const ANIM_MS: f32 = 260.0;
@@ -124,10 +122,13 @@ enum Hovered {
     Add,
 }
 
+/// The drawer's whole visible life. There is no `Hidden` variant: once the
+/// slide-down completes the process exits, so "hidden" and "not running" are
+/// the same state by construction.
 enum DrawerState {
-    Hidden,
     SlidingUp { start: Instant },
     Shown,
+    /// Sliding down to dismiss; on completion the process exits.
     SlidingDown { start: Instant },
 }
 
@@ -150,7 +151,6 @@ pub struct DrawerApp {
     renderer: Renderer,
     metrics: Metrics,
     config: Config,
-    active_category: Option<String>,
     icons: HashMap<String, (Vec<u8>, u32, u32)>,
     // Cache of `config.apps` filtered by `search`, recomputed only when one
     // of those two actually changes rather than on every mouse move/render -
@@ -161,10 +161,8 @@ pub struct DrawerApp {
     state: DrawerState,
     layout: DrawerLayout,
     pos: (i32, i32),
-    request_rx: Receiver<Option<String>>,
     hovered: Hovered,
     mouse: (f32, f32),
-    focused: bool,
     ctrl_held: bool,
     scroll: f32,
     hover_alpha: HashMap<String, f32>,
@@ -211,12 +209,7 @@ fn force_foreground(hwnd: HWND) {
 }
 
 impl DrawerApp {
-    pub fn new(
-        event_loop: &ActiveEventLoop,
-        listener: TcpListener,
-        category: Option<String>,
-        proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    ) -> Self {
+    pub fn new(event_loop: &ActiveEventLoop, category: Option<String>) -> Self {
         let primary_monitor = event_loop.primary_monitor();
         let scale = primary_monitor
             .as_ref()
@@ -276,28 +269,20 @@ impl DrawerApp {
         // windows by default; we don't want that outline, just the rounding.
         window.set_border_color(None);
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        ipc::spawn_listener(listener, tx, move || {
-            let _ = proxy.send_event(UserEvent::Wake);
-        });
-
         let mut app = Self {
             window,
             hwnd,
             renderer: Renderer::new(window_w, window_h),
             metrics,
             config: Config::load(category.as_deref()),
-            active_category: category.clone(),
             icons: HashMap::new(),
             filtered: Vec::new(),
             search: String::new(),
-            state: DrawerState::Hidden,
+            state: DrawerState::SlidingUp { start: Instant::now() },
             layout,
             pos: (layout.hidden_x, layout.hidden_y),
-            request_rx: rx,
             hovered: Hovered::None,
             mouse: (0.0, 0.0),
-            focused: false,
             ctrl_held: false,
             scroll: 0.0,
             hover_alpha: HashMap::new(),
@@ -306,8 +291,36 @@ impl DrawerApp {
             shown_at: None,
         };
         app.refresh_filtered();
-        app.request(category, event_loop);
+        // A fresh process always exists to show the drawer, so start sliding
+        // it up immediately.
+        app.begin_show(event_loop);
         app
+    }
+
+    /// Positions the drawer off-screen on whichever monitor the cursor is
+    /// currently on, then starts the slide-up and makes the window visible.
+    fn begin_show(&mut self, event_loop: &ActiveEventLoop) {
+        // Recomputed here (using the live cursor position) so the drawer
+        // opens on whichever monitor the user is currently on.
+        self.layout = geometry::compute_layout(
+            self.metrics.window_w.round() as i32,
+            self.metrics.window_h.round() as i32,
+        );
+        self.set_pos(self.layout.hidden_x, self.layout.hidden_y);
+        self.state = DrawerState::SlidingUp { start: Instant::now() };
+        self.render();
+        self.window.set_visible(true);
+        self.schedule_next_frame(event_loop);
+    }
+
+    /// Starts dismissing the drawer. Once the slide-down completes the
+    /// process exits (see `tick`), so this is also how the drawer "closes".
+    pub fn begin_close(&mut self, event_loop: &ActiveEventLoop) {
+        if !matches!(self.state, DrawerState::SlidingDown { .. }) {
+            self.state = DrawerState::SlidingDown { start: Instant::now() };
+            self.schedule_next_frame(event_loop);
+            self.render();
+        }
     }
 
     fn set_pos(&mut self, x: i32, y: i32) {
@@ -322,67 +335,6 @@ impl DrawerApp {
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             Instant::now() + self.frame_interval,
         ));
-    }
-
-    fn toggle_visibility(&mut self, event_loop: &ActiveEventLoop) {
-        let now = Instant::now();
-        match self.state {
-            DrawerState::Hidden => {
-                // Recomputed on every show (not just once at hub startup) so
-                // the drawer opens on whichever monitor the user is
-                // currently on, rather than always the monitor that was
-                // under the cursor when the resident hub process launched.
-                self.layout = geometry::compute_layout(
-                    self.metrics.window_w.round() as i32,
-                    self.metrics.window_h.round() as i32,
-                );
-                self.set_pos(self.layout.hidden_x, self.layout.hidden_y);
-                self.state = DrawerState::SlidingUp { start: now };
-                self.render();
-                self.window.set_visible(true);
-            }
-            DrawerState::Shown | DrawerState::SlidingUp { .. } => {
-                self.state = DrawerState::SlidingDown { start: now };
-            }
-            DrawerState::SlidingDown { .. } => {
-                self.state = DrawerState::SlidingUp { start: now };
-            }
-        }
-        self.schedule_next_frame(event_loop);
-        self.render();
-    }
-
-    fn switch_category(&mut self, category: Option<String>) {
-        self.config = Config::load(category.as_deref());
-        self.icons.clear();
-        self.search.clear();
-        self.hovered = Hovered::None;
-        self.hover_alpha.clear();
-        self.scroll = 0.0;
-        let title = match &category {
-            Some(name) => format!("Onyx Launcher - {name}"),
-            None => "Onyx Launcher".to_string(),
-        };
-        self.window.set_title(&title);
-        self.active_category = category;
-        self.refresh_filtered();
-    }
-
-    fn request(&mut self, category: Option<String>, event_loop: &ActiveEventLoop) {
-        if category == self.active_category {
-            self.toggle_visibility(event_loop);
-            return;
-        }
-        self.switch_category(category);
-        match self.state {
-            DrawerState::Hidden => self.toggle_visibility(event_loop),
-            DrawerState::SlidingDown { .. } => {
-                self.state = DrawerState::SlidingUp { start: Instant::now() };
-                self.schedule_next_frame(event_loop);
-            }
-            DrawerState::Shown | DrawerState::SlidingUp { .. } => {}
-        }
-        self.render();
     }
 
     /// Makes sure `path`'s icon is decoded and cached, without handing back
@@ -745,11 +697,10 @@ impl DrawerApp {
         self.filtered = apps;
     }
 
-    pub fn poll_requests(&mut self, event_loop: &ActiveEventLoop) {
-        while let Ok(category) = self.request_rx.try_recv() {
-            self.request(category, event_loop);
-        }
-
+    /// Advances animations one step. Called every `about_to_wait`. When a
+    /// slide-down finishes, the process exits - "hidden" is not a resting
+    /// state, it's the end of the process.
+    pub fn tick(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let dt_ms = now.duration_since(self.last_tick).as_secs_f32() * 1000.0;
         self.last_tick = now;
@@ -774,19 +725,22 @@ impl DrawerApp {
                 let y = lerp(self.layout.shown_y as f32, self.layout.hidden_y as f32, t) as i32;
                 self.set_pos(self.layout.shown_x, y);
                 if t >= 1.0 {
-                    self.state = DrawerState::Hidden;
+                    // Fully dismissed. Exit the process outright rather than
+                    // just returning from the event loop: the OS releases our
+                    // single-instance mutex the instant the process dies, so
+                    // the next launch is guaranteed to see a clean slate and
+                    // show the drawer. This is the crux of the "reopen always
+                    // works" guarantee - there is never a lingering process.
                     self.window.set_visible(false);
-                } else {
-                    needs_more_frames = true;
+                    std::process::exit(0);
                 }
+                needs_more_frames = true;
             }
-            _ => {}
+            DrawerState::Shown => {}
         }
 
-        if !matches!(self.state, DrawerState::Hidden) {
-            needs_more_frames |= self.tick_hover(dt_ms);
-            self.render();
-        }
+        needs_more_frames |= self.tick_hover(dt_ms);
+        self.render();
 
         if needs_more_frames {
             self.schedule_next_frame(event_loop);
@@ -804,19 +758,17 @@ impl DrawerApp {
         match event {
             WindowEvent::RedrawRequested => self.render(),
             WindowEvent::Focused(focused) => {
-                self.focused = focused;
-                // Windows can deliver a stray/duplicate focus-lost message in
-                // the first moment after we forcibly grab foreground focus
-                // (see `force_foreground`); a short grace period keeps that
-                // from instantly undoing the show before the user even sees
-                // it, while still auto-hiding promptly on a real click-away.
+                // Click-away to dismiss. Windows can deliver a stray/duplicate
+                // focus-lost message in the first moment after we forcibly
+                // grab foreground focus (see `force_foreground`); a short
+                // grace period keeps that from instantly closing the drawer
+                // before the user even sees it, while still dismissing
+                // promptly on a real click-away.
                 let past_grace = self
                     .shown_at
                     .is_some_and(|t| t.elapsed().as_millis() > 200);
                 if !focused && past_grace && matches!(self.state, DrawerState::Shown) {
-                    self.state = DrawerState::SlidingDown { start: Instant::now() };
-                    self.schedule_next_frame(event_loop);
-                    self.render();
+                    self.begin_close(event_loop);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -852,7 +804,7 @@ impl DrawerApp {
                 ..
             } => self.handle_right_click(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                self.handle_key(event);
+                self.handle_key(event, event_loop);
                 self.render();
             }
             _ => {}
@@ -865,7 +817,8 @@ impl DrawerApp {
                 if let Some(app_entry) = self.filtered.get(i) {
                     let _ = std::process::Command::new(&app_entry.path).spawn();
                 }
-                self.toggle_visibility(event_loop);
+                // Launching dismisses the drawer (and exits the process).
+                self.begin_close(event_loop);
             }
             Hovered::AppRemove(i) => {
                 if let Some(app_entry) = self.filtered.get(i) {
@@ -912,7 +865,7 @@ impl DrawerApp {
         }
     }
 
-    fn handle_key(&mut self, event: winit::event::KeyEvent) {
+    fn handle_key(&mut self, event: winit::event::KeyEvent, event_loop: &ActiveEventLoop) {
         if self.ctrl_held {
             if let Key::Character(c) = &event.logical_key {
                 if c.eq_ignore_ascii_case("v") {
@@ -926,6 +879,12 @@ impl DrawerApp {
                 self.search.pop();
             }
             Key::Named(NamedKey::Escape) => {
+                // Esc clears an active search first; pressing it with an empty
+                // search dismisses the drawer.
+                if self.search.is_empty() {
+                    self.begin_close(event_loop);
+                    return;
+                }
                 self.search.clear();
             }
             _ => {

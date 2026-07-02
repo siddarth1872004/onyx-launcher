@@ -45,7 +45,9 @@ Pin `onyx-launcher.exe` to your taskbar **before** running it the first time - t
 
 Why pin the file and not a running window: the drawer deliberately never shows its own button in the taskbar's list of open windows (that's what lets it hide instead of visibly "closing"), so there's no running-window icon to right-click later. Pinning the `.exe` file itself sidesteps that entirely and is the only way to get a permanent launch point.
 
-From then on, that taskbar icon both opens and closes the drawer — the same resident background process handles every click, so it's instant either way. There's no global hotkey; each drawer opens only when you click its own pinned icon, which is what makes [categories](#categories) work cleanly — every one gets its own dedicated icon instead of fighting over a single shared shortcut.
+From then on, that taskbar icon both opens and closes the drawer. There's no global hotkey; each drawer opens only when you click its own pinned icon, which is what makes [categories](#categories) work cleanly — every one gets its own dedicated icon instead of fighting over a single shared shortcut.
+
+Onyx Launcher only runs while its drawer is actually on screen. The moment you dismiss it, the program fully exits — it does **not** sit in the background. That's deliberate: it means opening it is always a clean fresh launch, so it can never get into a "stuck, won't reopen" state. (The trade-off is a tiny cold-start each time, but the drawer is small enough that you won't notice.)
 
 ## Pinning apps
 
@@ -58,9 +60,9 @@ There's no limit on how many apps you can pin. If you pin more than fit on one s
 | Action | How |
 |---|---|
 | Open | Click the pinned taskbar icon |
-| Close | Click the pinned icon again, click anywhere outside the drawer, or click a tile to launch it (closes automatically after launching) |
+| Close | Click the pinned icon again, click anywhere outside the drawer, press `Esc` on an empty search box, or click a tile to launch it (closes automatically after launching) |
 
-The drawer is a single resident background process — after the very first launch, opening it is instant with no cold-start delay.
+Closing genuinely exits the program (it doesn't linger in the background), and opening launches it fresh — so reopening works every single time, with no way for it to get "stuck".
 
 ## Searching
 
@@ -88,7 +90,7 @@ If you want more than one themed drawer (say, a "Games" drawer separate from a "
 3. It generates a new standalone `<name>.exe` under `%LOCALAPPDATA%\OnyxLauncher\categories\<name>\`.
 4. Pin that new `.exe` to your taskbar just like any normal app.
 
-Each category keeps its own independent list of pinned apps, but under the hood every category and the main drawer all share the *same* single resident background process — pinning more categories doesn't cost you more RAM. Clicking a category's taskbar icon always opens that specific category, never a different one, since each icon pings the shared process with its own name.
+Each category is a genuinely separate `.exe` with its own independent list of pinned apps, and clicking a category's taskbar icon always opens that specific category. Like the main drawer, a category only runs while it's on screen, so having several pinned costs nothing while they're all closed.
 
 ## Multiple monitors and DPI
 
@@ -96,18 +98,18 @@ Each time it opens, the drawer positions itself flush with the taskbar on whiche
 
 ## Uninstalling
 
-1. Close the drawer and make sure the process has fully exited: right-click the taskbar and open **Task Manager**, find `onyx-launcher.exe` (and any category `.exe`s you made) under **Background processes**, and click **End task** if still present.
+1. Close the drawer (it exits on its own once closed — there's no background process to end).
 2. Unpin it from the taskbar (right-click the pinned icon → **Unpin from taskbar**).
 3. Delete the folder you unzipped it into.
 4. Optionally, delete its config folder: `%LOCALAPPDATA%\OnyxLauncher\` (this removes your pinned-app list and any categories you created).
 
 ## Troubleshooting
 
-**The drawer won't open at all.**
-Make sure no `onyx-launcher.exe` process is already stuck — check Task Manager's **Background processes** tab, end it if present, and relaunch from the exe.
+**The drawer won't open.**
+Because it exits fully whenever it closes, a "won't reopen" situation shouldn't happen — but if it ever does, open Task Manager's **Details** tab and end any stray `onyx-launcher.exe`, then launch again. Also confirm your taskbar pin points at the exe where you actually unzipped it (if you moved or deleted that folder, the pin is broken — re-pin from the current location).
 
-**I can't find its icon in the taskbar to pin it, and re-running the exe seems to just run silently in the background.**
-This is expected, not a bug: the drawer never shows a taskbar button for its own window (see [First run](#first-run)), so there's nothing to right-click while it's running. It genuinely is toggling show/hide each time you re-run the exe - it just isn't visibly discoverable that way. Pin the **file** instead: right-click `onyx-launcher.exe` in File Explorer → **Pin to taskbar** (use **Show more options** first if you don't see it directly).
+**I can't find its icon in the taskbar to pin it.**
+The drawer never shows a taskbar button for its own window (see [First run](#first-run)), so there's nothing to right-click while it's running. Pin the **file** instead: right-click `onyx-launcher.exe` in File Explorer → **Pin to taskbar** (use **Show more options** first if you don't see it directly).
 
 **A pinned app's icon looks wrong or generic.**
 This happens if the `.exe` you pinned doesn't embed a proper icon resource itself (common for some portable/scripted tools) — Onyx Launcher shows whatever Windows itself reports for that file.

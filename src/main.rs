@@ -1,31 +1,25 @@
 #![windows_subsystem = "windows"]
 
-use std::net::TcpListener;
-
 use onyx_launcher::app::{DrawerApp, UserEvent};
-use onyx_launcher::{config, ipc};
+use onyx_launcher::config;
+use onyx_launcher::single_instance::{self, InstanceGuard};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 struct Handler {
-    listener: Option<TcpListener>,
+    // Kept alive for the whole process: dropping it (on exit) releases the
+    // single-instance mutex so the next launch can show the drawer.
+    _guard: Option<InstanceGuard>,
     category: Option<String>,
-    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     app: Option<DrawerApp>,
 }
 
 impl ApplicationHandler<UserEvent> for Handler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.app.is_none() {
-            let listener = self.listener.take().expect("listener already consumed");
-            self.app = Some(DrawerApp::new(
-                event_loop,
-                listener,
-                self.category.take(),
-                self.proxy.clone(),
-            ));
+            self.app = Some(DrawerApp::new(event_loop, self.category.take()));
         }
     }
 
@@ -36,50 +30,26 @@ impl ApplicationHandler<UserEvent> for Handler {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
+        // A second launch pulsed our toggle event: hide (and therefore exit).
         if let Some(app) = &mut self.app {
-            app.poll_requests(event_loop);
+            app.begin_close(event_loop);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(app) = &mut self.app {
-            app.poll_requests(event_loop);
+            app.tick(event_loop);
         }
     }
 }
 
-/// Windows derives an implicit "AppUserModelID" for an unregistered exe from
-/// its file path, and the shell uses that ID to decide whether a taskbar
-/// pin click should activate an already-running instance instead of
-/// re-launching the target. Since our resident hub deliberately has no
-/// taskbar-tracked window to activate (see `set_skip_taskbar`), that
-/// shell-side "it's already running, nothing to activate" conclusion can
-/// make the pin click silently do nothing instead of falling back to
-/// actually running the exe again. Giving every process launch its own
-/// unique explicit AppUserModelID means the shell never considers a new
-/// launch a match for whatever's already running, so it always re-executes
-/// the pinned target - which is what we want, since our own IPC handshake
-/// (not Explorer's window activation) is what's responsible for showing the
-/// drawer.
-fn set_unique_app_id() {
-    let aumid: Vec<u16> = format!("OnyxLauncher.{}\0", std::process::id())
-        .encode_utf16()
-        .collect();
-    unsafe {
-        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
-            windows::core::PCWSTR(aumid.as_ptr()),
-        );
-    }
-}
-
 fn main() {
-    set_unique_app_id();
-
     let category = config::category_name();
 
-    let Some(listener) = ipc::claim_or_wake(category.as_deref()) else {
-        // Another instance is already running; it has been woken up.
-        // Exit immediately.
+    // If a drawer for this category is already up, `acquire_or_signal` has
+    // already told it to toggle closed - so we just exit. Otherwise we own
+    // the drawer and hold the guard for the process lifetime.
+    let Some(guard) = single_instance::acquire_or_signal(category.as_deref()) else {
         return;
     };
 
@@ -87,12 +57,15 @@ fn main() {
         .build()
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+    // Wake the event loop whenever another launch pulses the toggle event.
     let proxy = event_loop.create_proxy();
+    single_instance::spawn_signal_listener(&guard, move || {
+        let _ = proxy.send_event(UserEvent::Toggle);
+    });
 
     let mut handler = Handler {
-        listener: Some(listener),
+        _guard: Some(guard),
         category,
-        proxy,
         app: None,
     };
     let _ = event_loop.run_app(&mut handler);

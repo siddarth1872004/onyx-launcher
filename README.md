@@ -25,13 +25,13 @@ It started as a fairly conventional `egui`/OpenGL app and was later rewritten fr
 
 ## Features
 
-- **Instant toggle** — one resident background process per machine (not per pinned category — see below), woken by a taskbar click, so there's no cold-start delay.
+- **Dead-simple lifecycle, reopens every time** — the process runs *only while the drawer is on screen*. Dismissing it (click away, `Esc`, launch an app, or click the pin again) exits the process entirely, so there's never a hidden background instance to get "stuck". Reopening is just launching the exe again, which the OS does reliably — no resident hub, no wake-up channel that can silently fail.
 - **Native Windows 11 look** — rounded, near-opaque black panel with real per-pixel alpha compositing via `UpdateLayeredWindow`, not a faked shape.
 - **Search-as-you-type**, with clipboard paste (`Ctrl+V`) support.
 - **Scrollable grid** for when you've pinned more apps than fit on one screen.
 - **DPI-aware and follows your cursor's monitor** — same physical size on 100%/150%/200% scaled displays, and opens on whichever screen you're currently on, not a fixed monitor.
 - **Smooth hover animation** on tiles, without paying for continuous repaints while idle.
-- **Categories**: a companion tool (`onyx-category-maker`) lets you build additional standalone, independently-pinnable `.exe`s — each with its own icon, name, and app list (e.g. a "Games" drawer and a "Work" drawer, each pinned separately to the taskbar). Under the hood they all share the *same* single resident process, so pinning more categories doesn't cost more RAM.
+- **Categories**: a companion tool (`onyx-category-maker`) lets you build additional standalone, independently-pinnable `.exe`s — each with its own icon, name, and app list (e.g. a "Games" drawer and a "Work" drawer, each pinned separately to the taskbar). Each is a real distinct executable with its own pinned-app list.
 - **Right-click to remove** a pinned app, either via the native context menu or a hover-revealed "×" badge.
 
 ## Why it's small
@@ -41,8 +41,8 @@ The whole point of this project was chasing "how light can a real, good-looking 
 | | |
 |---|---|
 | Binary size | ~490 KB |
-| Idle RAM (working set) | ~27 MB |
-| Idle CPU | 0% |
+| RAM while open (working set) | ~27 MB |
+| RAM / CPU while closed | none — the process doesn't exist |
 | GPU driver dependency | None |
 
 That last line is the interesting one. The first version used `egui`/`eframe` over OpenGL, which is a perfectly good stack — but loading a real OpenGL context pulls in your GPU vendor's driver DLLs (shader compiler, command buffer infrastructure, the works), which alone accounts for tens of MB of resident memory regardless of how lean the application code is. Onyx Launcher's renderer is hand-written on top of **GDI+** — a plain system DLL every Windows process already has access to — composited onto the window via `UpdateLayeredWindow` for real per-pixel alpha. No GPU context, no shader compiler, no vendor driver ever loads.
@@ -80,11 +80,13 @@ This produces both binaries in `target/release/`:
 
 100% Rust — no C/C++ in the application itself. All Win32/GDI+/DWM access goes through the [`windows`](https://crates.io/crates/windows) crate; [`winit`](https://crates.io/crates/winit) handles windowing/input only (it doesn't own rendering here).
 
+The lifecycle is the load-bearing design decision: **a process lives only while its drawer is visible.** Every way of dismissing the drawer ends by exiting the process, so "closed" and "not running" are the same state. This is what makes reopening bulletproof — there's no resident background process that a later launch has to wake through some channel that might silently fail; you just run the exe again. A per-category named **mutex** stops two copies of the same drawer showing at once, and a named **event** lets a second launch tell an already-open drawer to close (clicking the pin also removes focus, which independently dismisses it, so the close path has a built-in fallback).
+
 - `src/app.rs` — the drawer's state machine, hit-testing, and GDI+ rendering.
 - `src/gdiplus.rs` — a minimal safe(ish) wrapper around the raw GDI+ Win32 API.
 - `src/main.rs` — a `winit`-based event loop (window/input handling only — no rendering backend).
+- `src/single_instance.rs` — the named mutex + event coordination and the exit-on-hide guarantee described above.
 - `src/config.rs` — per-category JSON config, with category identity derived purely from the running exe's filename.
-- `src/ipc.rs` — a single fixed-port loopback listener; any category's exe launching pings the one resident process to show/switch, instead of spawning its own.
 - `src/icon.rs` — extracts `.exe` icons via `SHGetFileInfoW` + GDI for display in the grid.
 - `src/resource_icon.rs` — the reverse: patches a *new* icon resource into a copied `.exe` (used by the category maker), via `BeginUpdateResourceW`/`UpdateResourceW`.
 - `src/geometry.rs` — computes the taskbar-flush, bottom-center window position from monitor work-area info.

@@ -1,6 +1,8 @@
 # Onyx Launcher
 
-A near-instant app drawer that slides up from your Windows taskbar — no Electron, no GPU driver, no bloat.
+![Rust](https://img.shields.io/badge/language-Rust-orange) ![Platform](https://img.shields.io/badge/platform-Windows%2011-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
+A near-instant app drawer that slides up from your Windows taskbar — written in Rust, with no Electron, no GPU driver, no bloat.
 
 ![Onyx Launcher screenshot](docs/screenshot.png)
 
@@ -61,6 +63,8 @@ This produces two binaries in `target/release/`:
 Run `onyx-category-maker.exe` (it must sit next to `onyx-launcher.exe`), give it a name and an icon image (PNG/JPG/BMP/ICO), and it produces a standalone `<name>.exe` under `%LOCALAPPDATA%\OnyxLauncher\categories\<name>\`. Pin that exe to your taskbar like any other app — it's a real distinct executable with your chosen icon, and it maintains its own independent app list.
 
 ## Architecture
+
+100% Rust — no C/C++ in the application itself. All Win32/GDI+/DWM access goes through the [`windows`](https://crates.io/crates/windows) crate; [`winit`](https://crates.io/crates/winit) handles windowing/input only (it doesn't own rendering here).
 
 - `src/app.rs` — the drawer's state machine, hit-testing, and GDI+ rendering.
 - `src/gdiplus.rs` — a minimal safe(ish) wrapper around the raw GDI+ Win32 API.

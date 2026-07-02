@@ -6,6 +6,16 @@ A near-instant app drawer that slides up from your Windows taskbar — written i
 
 ![Onyx Launcher screenshot](docs/screenshot.png)
 
+## Installation
+
+1. Grab the latest `.zip` from **[Releases](../../releases/latest)**.
+2. Unzip it anywhere (e.g. `C:\Tools\OnyxLauncher\`) — there's no installer, and it doesn't need administrator rights.
+3. Run `onyx-launcher.exe` once. It'll slide up automatically on first launch.
+4. Right-click its icon in the taskbar and choose **Pin to taskbar**, then close the window (the pin stays).
+5. From then on, press `Ctrl+Space` anywhere, or click the pinned icon, to summon it.
+
+> **Windows SmartScreen note:** since this is an unsigned, independently-built binary, Windows may show a "Windows protected your PC" prompt the first time you run it. Click **More info → Run anyway**. This is expected for any executable that isn't purchased through a code-signing certificate — the source is fully here if you'd rather build it yourself (see [Building from source](#building-from-source)).
+
 ## What it is
 
 Onyx Launcher is a Spotlight-style pinned-app drawer for Windows 11. Hit `Ctrl+Space` (or click its pinned taskbar icon) and it slides up out of the taskbar with a real Windows 11 acrylic-blurred, rounded-corner panel. Click a tile to launch, right-click to remove, type to filter. Hit the hotkey again (or click away) and it slides back down.
@@ -15,7 +25,7 @@ It started as a fairly conventional `egui`/OpenGL app and was later rewritten fr
 ## Features
 
 - **Instant toggle** — one resident background process per machine (not per pinned category — see below), woken by a global hotkey or a taskbar click, so there's no cold-start delay.
-- **Native Windows 11 look** — real DWM acrylic backdrop, rounded corners, drop shadow, all via the actual Win32 APIs, not faked.
+- **Native Windows 11 look** — real DWM acrylic backdrop and rounded corners via the actual Win32 APIs, not faked.
 - **Search-as-you-type**, with clipboard paste (`Ctrl+V`) support.
 - **Scrollable grid** for when you've pinned more apps than fit on one screen.
 - **DPI-aware** — same physical size on 100%/150%/200% scaled displays.
@@ -38,7 +48,17 @@ That last line is the interesting one. The first version used `egui`/`eframe` ov
 
 The tradeoff: no immediate-mode UI framework to lean on. Hit-testing, hover state, text input, and layout are all hand-rolled in `app.rs`.
 
-## Building
+## Usage
+
+1. Click **+ Add app** and pick an `.exe` to pin it into the grid.
+2. Right-click a tile (or hover and click the "×" badge) to remove it.
+3. Type to filter, scroll if you've pinned more than fits, `Esc` to clear the search.
+
+### Adding a category
+
+Run `onyx-category-maker.exe` (it must sit next to `onyx-launcher.exe`), give it a name and an icon image (PNG/JPG/BMP/ICO), and it produces a standalone `<name>.exe` under `%LOCALAPPDATA%\OnyxLauncher\categories\<name>\`. Pin that exe to your taskbar like any other app — it's a real distinct executable with your chosen icon, and it maintains its own independent app list.
+
+## Building from source
 
 Requires Rust with the `x86_64-pc-windows-msvc` target (MSVC Build Tools + Windows SDK — no full Visual Studio install needed).
 
@@ -46,21 +66,10 @@ Requires Rust with the `x86_64-pc-windows-msvc` target (MSVC Build Tools + Windo
 cargo build --release
 ```
 
-This produces two binaries in `target/release/`:
+This produces both binaries in `target/release/`:
 
 - `onyx-launcher.exe` — the drawer itself.
 - `onyx-category-maker.exe` — a small GUI tool for generating additional pinnable category drawers.
-
-## Usage
-
-1. Run `onyx-launcher.exe` once, then pin it to your taskbar (right-click the running icon → *Pin to taskbar*).
-2. Press `Ctrl+Space` anywhere, or click the pinned icon, to toggle the drawer.
-3. Click **+ Add app** and pick an `.exe` to pin it into the grid.
-4. Right-click a tile (or hover and click the "×" badge) to remove it.
-
-### Adding a category
-
-Run `onyx-category-maker.exe` (it must sit next to `onyx-launcher.exe`), give it a name and an icon image (PNG/JPG/BMP/ICO), and it produces a standalone `<name>.exe` under `%LOCALAPPDATA%\OnyxLauncher\categories\<name>\`. Pin that exe to your taskbar like any other app — it's a real distinct executable with your chosen icon, and it maintains its own independent app list.
 
 ## Architecture
 

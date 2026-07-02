@@ -16,6 +16,8 @@ A near-instant app drawer that slides up from your Windows taskbar — written i
 
 > **Windows SmartScreen note:** since this is an unsigned, independently-built binary, Windows may show a "Windows protected your PC" prompt the first time you run it. Click **More info → Run anyway**. This is expected for any executable that isn't purchased through a code-signing certificate — the source is fully here if you'd rather build it yourself (see [Building from source](#building-from-source)).
 
+For the full walkthrough — pinning apps, categories, uninstalling, troubleshooting — see the [User Guide](docs/USER_GUIDE.md).
+
 ## What it is
 
 Onyx Launcher is a Spotlight-style pinned-app drawer for Windows 11. Hit `Ctrl+Space` (or click its pinned taskbar icon) and it slides up out of the taskbar as a rounded-corner, near-opaque black panel. Click a tile to launch, right-click to remove, type to filter. Hit the hotkey again (or click away) and it slides back down.

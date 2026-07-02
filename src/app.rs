@@ -20,7 +20,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
-use winit::platform::windows::{BackdropType, CornerPreference, WindowExtWindows};
+use winit::platform::windows::WindowExtWindows;
 use winit::window::{Window, WindowLevel};
 
 use crate::config::Config;
@@ -230,8 +230,16 @@ impl DrawerApp {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED.0 as isize);
         }
 
-        window.set_system_backdrop(BackdropType::TransientWindow);
-        window.set_corner_preference(CornerPreference::Round);
+        // No DWM system backdrop (acrylic): it paints across the window's
+        // full rectangular bounds regardless of our own rounded alpha shape,
+        // so its raw rectangular edge shows as a grey fringe/notch beyond
+        // our rounded corners. Our panel fill is already ~96% opaque, so the
+        // live blur added little - dropping it entirely gives clean corners.
+        //
+        // DWMWA_WINDOW_CORNER_PREFERENCE is also a no-op on a manually
+        // WS_EX_LAYERED window (verified empirically - it doesn't clip
+        // anything here), so all corner rounding is our own alpha shape in
+        // `render`; nothing to set on the window itself for that either.
         window.set_skip_taskbar(true);
         // DWM draws a thin accent-colored 1px border around rounded-corner
         // windows by default; we don't want that outline, just the rounding.

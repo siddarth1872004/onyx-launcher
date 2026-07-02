@@ -12,7 +12,7 @@ A near-instant app drawer that slides up from your Windows taskbar — written i
 2. Unzip it anywhere (e.g. `C:\Tools\OnyxLauncher\`) — there's no installer, and it doesn't need administrator rights.
 3. Run `onyx-launcher.exe` once. It'll slide up automatically on first launch.
 4. Right-click its icon in the taskbar and choose **Pin to taskbar**, then close the window (the pin stays).
-5. From then on, press `Ctrl+Space` anywhere, or click the pinned icon, to summon it.
+5. From then on, click that pinned icon to summon it.
 
 > **Windows SmartScreen note:** since this is an unsigned, independently-built binary, Windows may show a "Windows protected your PC" prompt the first time you run it. Click **More info → Run anyway**. This is expected for any executable that isn't purchased through a code-signing certificate — the source is fully here if you'd rather build it yourself (see [Building from source](#building-from-source)).
 
@@ -20,13 +20,13 @@ For the full walkthrough — pinning apps, categories, uninstalling, troubleshoo
 
 ## What it is
 
-Onyx Launcher is a Spotlight-style pinned-app drawer for Windows 11. Hit `Ctrl+Space` (or click its pinned taskbar icon) and it slides up out of the taskbar as a rounded-corner, near-opaque black panel. Click a tile to launch, right-click to remove, type to filter. Hit the hotkey again (or click away) and it slides back down.
+Onyx Launcher is a Spotlight-style pinned-app drawer for Windows 11. Click its pinned taskbar icon and it slides up out of the taskbar as a rounded-corner, near-opaque black panel. Click a tile to launch, right-click to remove, type to filter. Click the icon again (or click away) and it slides back down.
 
 It started as a fairly conventional `egui`/OpenGL app and was later rewritten from scratch on plain GDI+ specifically to strip out the GPU driver dependency — see [Architecture](#architecture) for why that mattered.
 
 ## Features
 
-- **Instant toggle** — one resident background process per machine (not per pinned category — see below), woken by a global hotkey or a taskbar click, so there's no cold-start delay.
+- **Instant toggle** — one resident background process per machine (not per pinned category — see below), woken by a taskbar click, so there's no cold-start delay.
 - **Native Windows 11 look** — rounded, near-opaque black panel with real per-pixel alpha compositing via `UpdateLayeredWindow`, not a faked shape.
 - **Search-as-you-type**, with clipboard paste (`Ctrl+V`) support.
 - **Scrollable grid** for when you've pinned more apps than fit on one screen.

@@ -43,9 +43,9 @@ To make it easy to reach later:
 
 1. While it's running, right-click its icon in the taskbar.
 2. Choose **Pin to taskbar**.
-3. Close the window (click away, or press `Ctrl+Space`) — the taskbar pin stays even though the process keeps running in the background.
+3. Close the window (click away, or click the pinned icon again) — the taskbar pin stays even though the process keeps running in the background.
 
-From now on, either the pinned icon or the `Ctrl+Space` hotkey will summon it — you don't need to keep launching it from the folder.
+From now on, click that pinned icon to summon it — you don't need to keep launching it from the folder. There's no global hotkey; each drawer opens only when you click its own pinned icon, which is what makes [categories](#categories) work cleanly — every one gets its own dedicated icon instead of fighting over a single shared shortcut.
 
 ## Pinning apps
 
@@ -57,10 +57,10 @@ There's no limit on how many apps you can pin. If you pin more than fit on one s
 
 | Action | How |
 |---|---|
-| Open | `Ctrl+Space`, or click the pinned taskbar icon |
-| Close | `Ctrl+Space` again, click anywhere outside the drawer, or click a tile to launch it (closes automatically after launching) |
+| Open | Click the pinned taskbar icon |
+| Close | Click the pinned icon again, click anywhere outside the drawer, or click a tile to launch it (closes automatically after launching) |
 
-The drawer is a single resident background process — after the very first launch, opening it is instant with no cold-start delay, whether triggered by the hotkey or the taskbar icon.
+The drawer is a single resident background process — after the very first launch, opening it is instant with no cold-start delay.
 
 ## Searching
 
@@ -88,7 +88,7 @@ If you want more than one themed drawer (say, a "Games" drawer separate from a "
 3. It generates a new standalone `<name>.exe` under `%LOCALAPPDATA%\OnyxLauncher\categories\<name>\`.
 4. Pin that new `.exe` to your taskbar just like any normal app.
 
-Each category keeps its own independent list of pinned apps, but under the hood every category and the main drawer all share the *same* single resident background process — pinning more categories doesn't cost you more RAM.
+Each category keeps its own independent list of pinned apps, but under the hood every category and the main drawer all share the *same* single resident background process — pinning more categories doesn't cost you more RAM. Clicking a category's taskbar icon always opens that specific category, never a different one, since each icon pings the shared process with its own name.
 
 ## Multiple monitors and DPI
 
@@ -105,9 +105,6 @@ The drawer always opens flush with the taskbar on the monitor your mouse/focus w
 
 **The drawer won't open at all.**
 Make sure no `onyx-launcher.exe` process is already stuck — check Task Manager's **Background processes** tab, end it if present, and relaunch from the exe.
-
-**`Ctrl+Space` doesn't do anything.**
-Another running app may already be using that global hotkey. Close the conflicting app, or check if it lets you rebind its own shortcut.
 
 **A pinned app's icon looks wrong or generic.**
 This happens if the `.exe` you pinned doesn't embed a proper icon resource itself (common for some portable/scripted tools) — Onyx Launcher shows whatever Windows itself reports for that file.

@@ -4,8 +4,6 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HGLOBAL, HWND, POINT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
@@ -158,10 +156,6 @@ pub struct DrawerApp {
     state: DrawerState,
     layout: DrawerLayout,
     pos: (i32, i32),
-    // Kept alive so the hotkey stays registered; unregistered automatically on drop.
-    #[allow(dead_code)]
-    hotkey_manager: GlobalHotKeyManager,
-    hotkey_id: u32,
     request_rx: Receiver<Option<String>>,
     hovered: Hovered,
     mouse: (f32, f32),
@@ -185,8 +179,8 @@ fn hwnd_of(window: &Window) -> HWND {
 /// A plain `SetForegroundWindow` (what winit's `focus_window()` calls)
 /// silently fails when called from a background process that isn't already
 /// the foreground app - which is *always* the case for us, since we're a
-/// resident hub being summoned via a global hotkey or another process's IPC
-/// ping, never the process the user was just interacting with. Without a
+/// resident hub being summoned via another process's IPC ping (a taskbar
+/// click), never the process the user was just interacting with. Without a
 /// real focus grant, the window shows but can't receive keyboard input, and
 /// is one stray event away from immediately re-triggering our own
 /// focus-lost auto-hide. The standard workaround: temporarily attach our
@@ -282,12 +276,6 @@ impl DrawerApp {
             let _ = proxy.send_event(UserEvent::Wake);
         });
 
-        let hotkey_manager =
-            GlobalHotKeyManager::new().expect("failed to initialize global hotkey manager");
-        let hotkey = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
-        let hotkey_id = hotkey.id();
-        let _ = hotkey_manager.register(hotkey);
-
         let mut app = Self {
             window,
             hwnd,
@@ -300,8 +288,6 @@ impl DrawerApp {
             state: DrawerState::Hidden,
             layout,
             pos: (layout.hidden_x, layout.hidden_y),
-            hotkey_manager,
-            hotkey_id,
             request_rx: rx,
             hovered: Hovered::None,
             mouse: (0.0, 0.0),
@@ -734,11 +720,6 @@ impl DrawerApp {
     pub fn poll_requests(&mut self, event_loop: &ActiveEventLoop) {
         while let Ok(category) = self.request_rx.try_recv() {
             self.request(category, event_loop);
-        }
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.id == self.hotkey_id && event.state == HotKeyState::Pressed {
-                self.toggle_visibility(event_loop);
-            }
         }
 
         let now = Instant::now();

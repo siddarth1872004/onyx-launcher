@@ -48,7 +48,33 @@ impl ApplicationHandler<UserEvent> for Handler {
     }
 }
 
+/// Windows derives an implicit "AppUserModelID" for an unregistered exe from
+/// its file path, and the shell uses that ID to decide whether a taskbar
+/// pin click should activate an already-running instance instead of
+/// re-launching the target. Since our resident hub deliberately has no
+/// taskbar-tracked window to activate (see `set_skip_taskbar`), that
+/// shell-side "it's already running, nothing to activate" conclusion can
+/// make the pin click silently do nothing instead of falling back to
+/// actually running the exe again. Giving every process launch its own
+/// unique explicit AppUserModelID means the shell never considers a new
+/// launch a match for whatever's already running, so it always re-executes
+/// the pinned target - which is what we want, since our own IPC handshake
+/// (not Explorer's window activation) is what's responsible for showing the
+/// drawer.
+fn set_unique_app_id() {
+    let aumid: Vec<u16> = format!("OnyxLauncher.{}\0", std::process::id())
+        .encode_utf16()
+        .collect();
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            windows::core::PCWSTR(aumid.as_ptr()),
+        );
+    }
+}
+
 fn main() {
+    set_unique_app_id();
+
     let category = config::category_name();
 
     let Some(listener) = ipc::claim_or_wake(category.as_deref()) else {

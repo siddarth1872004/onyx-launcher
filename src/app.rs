@@ -152,6 +152,11 @@ pub struct DrawerApp {
     config: Config,
     active_category: Option<String>,
     icons: HashMap<String, (Vec<u8>, u32, u32)>,
+    // Cache of `config.apps` filtered by `search`, recomputed only when one
+    // of those two actually changes rather than on every mouse move/render -
+    // `hit_test` and `render` run far more often than the search text or
+    // pinned-app list does.
+    filtered: Vec<crate::config::AppEntry>,
     search: String,
     state: DrawerState,
     layout: DrawerLayout,
@@ -284,6 +289,7 @@ impl DrawerApp {
             config: Config::load(category.as_deref()),
             active_category: category.clone(),
             icons: HashMap::new(),
+            filtered: Vec::new(),
             search: String::new(),
             state: DrawerState::Hidden,
             layout,
@@ -299,6 +305,7 @@ impl DrawerApp {
             frame_interval,
             shown_at: None,
         };
+        app.refresh_filtered();
         app.request(category, event_loop);
         app
     }
@@ -321,6 +328,14 @@ impl DrawerApp {
         let now = Instant::now();
         match self.state {
             DrawerState::Hidden => {
+                // Recomputed on every show (not just once at hub startup) so
+                // the drawer opens on whichever monitor the user is
+                // currently on, rather than always the monitor that was
+                // under the cursor when the resident hub process launched.
+                self.layout = geometry::compute_layout(
+                    self.metrics.window_w.round() as i32,
+                    self.metrics.window_h.round() as i32,
+                );
                 self.set_pos(self.layout.hidden_x, self.layout.hidden_y);
                 self.state = DrawerState::SlidingUp { start: now };
                 self.render();
@@ -350,6 +365,7 @@ impl DrawerApp {
         };
         self.window.set_title(&title);
         self.active_category = category;
+        self.refresh_filtered();
     }
 
     fn request(&mut self, category: Option<String>, event_loop: &ActiveEventLoop) {
@@ -369,13 +385,17 @@ impl DrawerApp {
         self.render();
     }
 
-    fn get_icon(&mut self, path: &str) -> Option<(Vec<u8>, u32, u32)> {
-        if let Some(icon) = self.icons.get(path) {
-            return Some(icon.clone());
+    /// Makes sure `path`'s icon is decoded and cached, without handing back
+    /// a borrow - keeping this separate from the lookup lets `render` read
+    /// `self.icons` and draw through `self.renderer` at the same time
+    /// (disjoint fields) instead of cloning the pixel buffer on every frame
+    /// just to dodge the borrow checker.
+    fn ensure_icon(&mut self, path: &str) {
+        if !self.icons.contains_key(path) {
+            if let Some(icon) = icon::extract_icon_bgra(path, 48) {
+                self.icons.insert(path.to_string(), icon);
+            }
         }
-        let icon = icon::extract_icon_rgba(path, 48)?;
-        self.icons.insert(path.to_string(), icon.clone());
-        Some(icon)
     }
 
     fn tile_rect(&self, index: usize) -> Rect {
@@ -416,14 +436,15 @@ impl DrawerApp {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(tile_count));
     }
 
-    fn filtered_apps(&self) -> Vec<crate::config::AppEntry> {
+    fn refresh_filtered(&mut self) {
         let search_lower = self.search.to_lowercase();
-        self.config
+        self.filtered = self
+            .config
             .apps
             .iter()
             .filter(|a| search_lower.is_empty() || a.name.to_lowercase().contains(&search_lower))
             .cloned()
-            .collect()
+            .collect();
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Hovered {
@@ -431,7 +452,7 @@ impl DrawerApp {
         if !content.contains(x, y) {
             return Hovered::None;
         }
-        let apps = self.filtered_apps();
+        let apps = &self.filtered;
         for (i, _) in apps.iter().enumerate() {
             let r = self.tile_rect(i);
             if r.contains(x, y) {
@@ -502,6 +523,7 @@ impl DrawerApp {
             }
             let _ = CloseClipboard();
         }
+        self.refresh_filtered();
     }
 
     /// Eases every tile's hover-highlight value toward its target and reports
@@ -510,7 +532,7 @@ impl DrawerApp {
     fn tick_hover(&mut self, dt_ms: f32) -> bool {
         let target_key: Option<String> = match self.hovered {
             Hovered::App(i) | Hovered::AppRemove(i) => {
-                self.filtered_apps().get(i).map(|a| a.path.clone())
+                self.filtered.get(i).map(|a| a.path.clone())
             }
             Hovered::Add => Some("__add__".to_string()),
             Hovered::None => None,
@@ -602,7 +624,11 @@ impl DrawerApp {
             TextAlign::Near,
         );
 
-        let apps = self.filtered_apps();
+        // Temporarily move the cached filtered list out of `self` so the
+        // loop below can freely call `&mut self` methods (icon caching) per
+        // tile without the borrow checker treating `apps` as still borrowing
+        // `self` - this is a plain O(1) Vec move, not a clone.
+        let apps = std::mem::take(&mut self.filtered);
         self.clamp_scroll(apps.len() + 1);
 
         let content = self.content_area();
@@ -626,18 +652,19 @@ impl DrawerApp {
                 argb(fill_alpha, 255, 255, 255),
             );
 
-            if let Some((rgba, iw, ih)) = self.get_icon(&app_entry.path) {
+            self.ensure_icon(&app_entry.path);
+            if let Some((bgra, iw, ih)) = self.icons.get(&app_entry.path) {
                 let icon_size = self.metrics.icon;
-                self.renderer.surface.draw_rgba_image(
+                self.renderer.surface.draw_bgra_image(
                     (
                         r.x + (r.w - icon_size) / 2.0,
                         r.y + 8.0 * self.metrics.scale,
                         icon_size,
                         icon_size,
                     ),
-                    &rgba,
-                    iw,
-                    ih,
+                    bgra,
+                    *iw,
+                    *ih,
                 );
             }
 
@@ -715,6 +742,7 @@ impl DrawerApp {
 
         self.renderer.surface.reset_clip();
         self.renderer.surface.present(self.hwnd, self.pos.0, self.pos.1);
+        self.filtered = apps;
     }
 
     pub fn poll_requests(&mut self, event_loop: &ActiveEventLoop) {
@@ -806,7 +834,7 @@ impl DrawerApp {
                     MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
                 self.scroll -= lines;
-                let count = self.filtered_apps().len() + 1;
+                let count = self.filtered.len() + 1;
                 self.clamp_scroll(count);
                 self.render();
             }
@@ -834,18 +862,19 @@ impl DrawerApp {
     fn handle_left_click(&mut self, event_loop: &ActiveEventLoop) {
         match self.hovered {
             Hovered::App(i) => {
-                if let Some(app_entry) = self.filtered_apps().get(i) {
+                if let Some(app_entry) = self.filtered.get(i) {
                     let _ = std::process::Command::new(&app_entry.path).spawn();
                 }
                 self.toggle_visibility(event_loop);
             }
             Hovered::AppRemove(i) => {
-                if let Some(app_entry) = self.filtered_apps().get(i) {
+                if let Some(app_entry) = self.filtered.get(i) {
                     let path = app_entry.path.clone();
                     self.config.remove_app(&path);
                     self.icons.remove(&path);
                     self.hover_alpha.remove(&path);
                     self.hovered = Hovered::None;
+                    self.refresh_filtered();
                     self.render();
                 }
             }
@@ -860,6 +889,7 @@ impl DrawerApp {
                         .unwrap_or_else(|| "App".to_string());
                     let path_str = path.to_string_lossy().to_string();
                     self.config.add_app(name, path_str);
+                    self.refresh_filtered();
                 }
                 self.render();
             }
@@ -870,12 +900,13 @@ impl DrawerApp {
     fn handle_right_click(&mut self) {
         if let Hovered::App(i) | Hovered::AppRemove(i) = self.hovered {
             if self.show_remove_menu() {
-                if let Some(app_entry) = self.filtered_apps().get(i) {
+                if let Some(app_entry) = self.filtered.get(i) {
                     let path = app_entry.path.clone();
                     self.config.remove_app(&path);
                     self.icons.remove(&path);
                     self.hover_alpha.remove(&path);
                 }
+                self.refresh_filtered();
             }
             self.render();
         }
@@ -905,6 +936,7 @@ impl DrawerApp {
                 }
             }
         }
+        self.refresh_filtered();
     }
 }
 

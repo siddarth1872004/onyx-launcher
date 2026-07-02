@@ -10,9 +10,8 @@ A near-instant app drawer that slides up from your Windows taskbar — written i
 
 1. Grab the latest `.zip` from **[Releases](../../releases/latest)**.
 2. Unzip it anywhere (e.g. `C:\Tools\OnyxLauncher\`) — there's no installer, and it doesn't need administrator rights.
-3. Run `onyx-launcher.exe` once. It'll slide up automatically on first launch.
-4. Right-click its icon in the taskbar and choose **Pin to taskbar**, then close the window (the pin stays).
-5. From then on, click that pinned icon to summon it.
+3. **Pin `onyx-launcher.exe` to your taskbar first, before running it**: right-click the `.exe` file in File Explorer → **Pin to taskbar** (if you don't see that option, click **Show more options** first, then **Pin to taskbar**). The drawer intentionally never shows its own taskbar button while running, so this only works from the file itself, not from a running window.
+4. Click that new taskbar icon to launch it — it slides up immediately, and stays running in the background afterward so every later click is instant.
 
 > **Windows SmartScreen note:** since this is an unsigned, independently-built binary, Windows may show a "Windows protected your PC" prompt the first time you run it. Click **More info → Run anyway**. This is expected for any executable that isn't purchased through a code-signing certificate — the source is fully here if you'd rather build it yourself (see [Building from source](#building-from-source)).
 
@@ -30,7 +29,7 @@ It started as a fairly conventional `egui`/OpenGL app and was later rewritten fr
 - **Native Windows 11 look** — rounded, near-opaque black panel with real per-pixel alpha compositing via `UpdateLayeredWindow`, not a faked shape.
 - **Search-as-you-type**, with clipboard paste (`Ctrl+V`) support.
 - **Scrollable grid** for when you've pinned more apps than fit on one screen.
-- **DPI-aware** — same physical size on 100%/150%/200% scaled displays.
+- **DPI-aware and follows your cursor's monitor** — same physical size on 100%/150%/200% scaled displays, and opens on whichever screen you're currently on, not a fixed monitor.
 - **Smooth hover animation** on tiles, without paying for continuous repaints while idle.
 - **Categories**: a companion tool (`onyx-category-maker`) lets you build additional standalone, independently-pinnable `.exe`s — each with its own icon, name, and app list (e.g. a "Games" drawer and a "Work" drawer, each pinned separately to the taskbar). Under the hood they all share the *same* single resident process, so pinning more categories doesn't cost more RAM.
 - **Right-click to remove** a pinned app, either via the native context menu or a hover-revealed "×" badge.
@@ -41,8 +40,8 @@ The whole point of this project was chasing "how light can a real, good-looking 
 
 | | |
 |---|---|
-| Binary size | ~510 KB |
-| Idle RAM (working set) | ~21–24 MB |
+| Binary size | ~490 KB |
+| Idle RAM (working set) | ~27 MB |
 | Idle CPU | 0% |
 | GPU driver dependency | None |
 
@@ -51,6 +50,8 @@ That last line is the interesting one. The first version used `egui`/`eframe` ov
 (An earlier version also enabled DWM's acrylic backdrop material, but it turned out to paint across the window's full rectangular bounds regardless of our rounded alpha shape - producing a visible grey fringe outside the rounded corners. Since the panel is already ~96% opaque, the live blur wasn't adding much, so it was dropped in favor of clean corners.)
 
 The tradeoff: no immediate-mode UI framework to lean on. Hit-testing, hover state, text input, and layout are all hand-rolled in `app.rs`.
+
+On top of the RAM/binary-size numbers, the render path itself is tuned to do near-zero allocation per frame: GDI+ brushes, string formats, and fonts are created once and reused (not recreated on every fill/text call), icon pixel data is decoded once per app and cached in the byte order GDI+ wants natively (no per-frame format conversion or buffer copy), and the pinned-app list is only re-filtered when the search text or app list actually changes rather than on every mouse move. Animations and hover transitions stay pegged to the display's real refresh rate with no busy-polling, so idle CPU stays at 0% and interaction stays smooth without burning cycles reconstructing the same GDI+ objects dozens of times a frame.
 
 ## Usage
 

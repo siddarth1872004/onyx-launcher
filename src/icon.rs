@@ -7,8 +7,10 @@ use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_L
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL};
 
 /// Extracts the large icon associated with an executable and returns
-/// (RGBA8 pixels, width, height). Returns `None` on any failure.
-pub fn extract_icon_rgba(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
+/// (BGRA8 pixels, width, height) - the byte order GDI+/Windows DIBs use
+/// natively, so callers can hand this straight to `Surface::draw_bgra_image`
+/// every frame with no per-frame conversion. Returns `None` on any failure.
+pub fn extract_icon_bgra(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
     unsafe {
         let wide: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
         let mut shfi = SHFILEINFOW::default();
@@ -71,16 +73,11 @@ pub fn extract_icon_rgba(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32
         ReleaseDC(None, hdc_screen);
         let _ = DestroyIcon(hicon);
 
-        // Convert BGRA -> RGBA. Some legacy icons don't carry a real alpha
-        // channel; if the whole buffer came back fully transparent, treat
-        // any non-black pixel as opaque so the icon doesn't disappear.
-        let mut any_alpha = false;
-        for px in buf.chunks_exact_mut(4) {
-            if px[3] != 0 {
-                any_alpha = true;
-            }
-            px.swap(0, 2);
-        }
+        // Already BGRA (DrawIconEx's native order) - no channel swap needed.
+        // Some legacy icons don't carry a real alpha channel; if the whole
+        // buffer came back fully transparent, treat any non-black pixel as
+        // opaque so the icon doesn't disappear.
+        let any_alpha = buf.chunks_exact(4).any(|px| px[3] != 0);
         if !any_alpha {
             for px in buf.chunks_exact_mut(4) {
                 if px[0] != 0 || px[1] != 0 || px[2] != 0 {

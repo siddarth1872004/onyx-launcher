@@ -2,6 +2,7 @@ use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DrawerLayout {
@@ -13,12 +14,16 @@ pub struct DrawerLayout {
     pub hidden_y: i32,
 }
 
-/// Computes where the drawer window should sit: bottom-center of the primary
-/// monitor's work area (i.e. resting on top of the taskbar), and the
+/// Computes where the drawer window should sit: bottom-center of the work
+/// area of whichever monitor the cursor is currently on (i.e. resting on top
+/// of the taskbar of the screen the user is actually looking at - not always
+/// the primary monitor, which matters on multi-monitor setups), and the
 /// off-screen position it animates from.
 pub fn compute_layout(window_w: i32, window_h: i32) -> DrawerLayout {
     unsafe {
-        let hmonitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut cursor = POINT { x: 0, y: 0 };
+        let _ = GetCursorPos(&mut cursor);
+        let hmonitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()

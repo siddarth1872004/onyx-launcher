@@ -35,10 +35,10 @@ fn patch_and_read_back_icon() {
 
     resource_icon::patch_exe_icon(&dest_exe, &ico_bytes).expect("patch icon");
 
-    let (rgba, w, h) = icon::extract_icon_rgba(dest_exe.to_str().unwrap(), 48)
+    let (bgra, w, h) = icon::extract_icon_bgra(dest_exe.to_str().unwrap(), 48)
         .expect("should be able to extract the icon we just embedded");
     assert_eq!((w, h), (48, 48));
-    let any_opaque = rgba.chunks_exact(4).any(|px| px[3] > 0);
+    let any_opaque = bgra.chunks_exact(4).any(|px| px[3] > 0);
     assert!(any_opaque, "extracted icon should have visible pixels");
 
     let _ = std::fs::remove_file(&dest_exe);

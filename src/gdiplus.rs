@@ -5,6 +5,7 @@
 //! tradeoff is we lose egui's widget conveniences and have to hand-roll
 //! hit-testing, text input, and layout ourselves in `app.rs`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use windows::core::PCWSTR;
@@ -70,6 +71,14 @@ pub struct Surface {
     gp_bitmap: *mut GpBitmap,
     gp_graphics: *mut GpGraphics,
     font_family: *mut GpFontFamily,
+    // A single reusable brush (color set per draw via `GdipSetSolidFillColor`)
+    // and pre-built string formats, so hot render paths avoid a
+    // create/destroy round trip to GDI+ for every fill and text draw call -
+    // there can be dozens of these per frame while animating.
+    brush: *mut GpSolidFill,
+    format_near: *mut GpStringFormat,
+    format_center: *mut GpStringFormat,
+    fonts: HashMap<u32, *mut GpFont>,
 }
 
 impl Surface {
@@ -115,6 +124,19 @@ impl Surface {
             let name = wide("Segoe UI");
             GdipCreateFontFamilyFromName(PCWSTR(name.as_ptr()), std::ptr::null_mut(), &mut font_family);
 
+            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+            GdipCreateSolidFill(0, &mut brush);
+
+            let mut format_near: *mut GpStringFormat = std::ptr::null_mut();
+            GdipCreateStringFormat(0, 0, &mut format_near);
+            GdipSetStringFormatAlign(format_near, StringAlignmentNear);
+            GdipSetStringFormatLineAlign(format_near, StringAlignmentCenter);
+
+            let mut format_center: *mut GpStringFormat = std::ptr::null_mut();
+            GdipCreateStringFormat(0, 0, &mut format_center);
+            GdipSetStringFormatAlign(format_center, StringAlignmentCenter);
+            GdipSetStringFormatLineAlign(format_center, StringAlignmentCenter);
+
             Self {
                 width,
                 height,
@@ -125,8 +147,25 @@ impl Surface {
                 gp_bitmap,
                 gp_graphics,
                 font_family,
+                brush,
+                format_near,
+                format_center,
+                fonts: HashMap::new(),
             }
         }
+    }
+
+    /// Returns a cached `GpFont` for this pixel size, creating it on first
+    /// use. There are only a handful of distinct sizes used across a whole
+    /// render pass, so this turns what would be a create+destroy per text
+    /// draw (every frame) into a one-time cost per size for the life of the
+    /// surface.
+    fn font_for(&mut self, size_px: f32) -> *mut GpFont {
+        *self.fonts.entry(size_px.to_bits()).or_insert_with(|| unsafe {
+            let mut font: *mut GpFont = std::ptr::null_mut();
+            GdipCreateFont(self.font_family, size_px, FontStyleRegular.0, UnitPixel, &mut font);
+            font
+        })
     }
 
     /// Resets the whole surface to fully transparent black.
@@ -148,20 +187,16 @@ impl Surface {
             GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
             GdipClosePathFigure(path);
 
-            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-            GdipCreateSolidFill(argb, &mut brush);
-            GdipFillPath(self.gp_graphics, brush as *mut GpBrush, path);
-            GdipDeleteBrush(brush as *mut GpBrush);
+            GdipSetSolidFillColor(self.brush, argb);
+            GdipFillPath(self.gp_graphics, self.brush as *mut GpBrush, path);
             GdipDeletePath(path);
         }
     }
 
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, argb: u32) {
         unsafe {
-            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-            GdipCreateSolidFill(argb, &mut brush);
-            GdipFillRectangle(self.gp_graphics, brush as *mut GpBrush, x, y, w, h);
-            GdipDeleteBrush(brush as *mut GpBrush);
+            GdipSetSolidFillColor(self.brush, argb);
+            GdipFillRectangle(self.gp_graphics, self.brush as *mut GpBrush, x, y, w, h);
         }
     }
 
@@ -185,25 +220,13 @@ impl Surface {
         argb: u32,
         align: TextAlign,
     ) {
+        let font = self.font_for(size_px);
+        let format = match align {
+            TextAlign::Near => self.format_near,
+            TextAlign::Center => self.format_center,
+        };
         unsafe {
-            let mut font: *mut GpFont = std::ptr::null_mut();
-            GdipCreateFont(self.font_family, size_px, FontStyleRegular.0, UnitPixel, &mut font);
-
-            let mut format: *mut GpStringFormat = std::ptr::null_mut();
-            GdipCreateStringFormat(0, 0, &mut format);
-            GdipSetStringFormatAlign(
-                format,
-                match align {
-                    TextAlign::Near => StringAlignmentNear,
-                    TextAlign::Center => StringAlignmentCenter,
-                },
-            );
-            // Vertically center within the layout rect; GDI+ defaults to
-            // top-aligned otherwise, which looks off in a pill/tile.
-            GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
-
-            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-            GdipCreateSolidFill(argb, &mut brush);
+            GdipSetSolidFillColor(self.brush, argb);
 
             let layout = RectF {
                 X: rect.0,
@@ -219,22 +242,15 @@ impl Surface {
                 font,
                 &layout,
                 format,
-                brush as *mut GpBrush,
+                self.brush as *mut GpBrush,
             );
-
-            GdipDeleteBrush(brush as *mut GpBrush);
-            GdipDeleteStringFormat(format);
-            GdipDeleteFont(font);
         }
     }
 
     pub fn measure_text_width(&mut self, text: &str, size_px: f32) -> f32 {
+        let font = self.font_for(size_px);
+        let format = self.format_near;
         unsafe {
-            let mut font: *mut GpFont = std::ptr::null_mut();
-            GdipCreateFont(self.font_family, size_px, FontStyleRegular.0, UnitPixel, &mut font);
-            let mut format: *mut GpStringFormat = std::ptr::null_mut();
-            GdipCreateStringFormat(0, 0, &mut format);
-
             let layout = RectF {
                 X: 0.0,
                 Y: 0.0,
@@ -256,20 +272,17 @@ impl Surface {
                 &mut fitted,
                 &mut lines,
             );
-            GdipDeleteStringFormat(format);
-            GdipDeleteFont(font);
             bounds.Width
         }
     }
 
     /// Draws a straight (non-premultiplied), RGBA-ordered image (as produced
-    /// by `icon::extract_icon_rgba`) scaled into `dst`.
-    pub fn draw_rgba_image(&mut self, dst: (f32, f32, f32, f32), rgba: &[u8], src_w: u32, src_h: u32) {
-        // GDI+ / Windows DIBs expect BGRA byte order; flip R and B.
-        let mut bgra = rgba.to_vec();
-        for px in bgra.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
+    /// by `icon::extract_icon_bgra`, which is already in the byte order GDI+
+    /// wants) scaled into `dst`. Takes the pixels pre-converted rather than
+    /// converting here, since this runs once per visible tile on every
+    /// frame - re-swapping bytes and re-allocating a copy each call would be
+    /// pure waste for pixels that never change between frames.
+    pub fn draw_bgra_image(&mut self, dst: (f32, f32, f32, f32), bgra: &[u8], src_w: u32, src_h: u32) {
         unsafe {
             let mut bitmap: *mut GpBitmap = std::ptr::null_mut();
             GdipCreateBitmapFromScan0(
@@ -327,6 +340,12 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         unsafe {
+            for font in self.fonts.values() {
+                GdipDeleteFont(*font);
+            }
+            GdipDeleteStringFormat(self.format_near);
+            GdipDeleteStringFormat(self.format_center);
+            GdipDeleteBrush(self.brush as *mut GpBrush);
             GdipDeleteFontFamily(self.font_family);
             GdipDeleteGraphics(self.gp_graphics);
             GdipDisposeImage(self.gp_bitmap as *mut GpImage);

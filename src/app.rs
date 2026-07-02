@@ -12,8 +12,10 @@ use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetWindowLongPtrW, SetWindowLongPtrW,
+    AppendMenuW, BringWindowToTop, CreatePopupMenu, DestroyMenu, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowLongPtrW,
     TrackPopupMenu, GWL_EXSTYLE, MF_STRING, TPM_NONOTIFY, TPM_RETURNCMD, WS_EX_LAYERED,
 };
 use winit::dpi::PhysicalPosition;
@@ -176,6 +178,35 @@ fn hwnd_of(window: &Window) -> HWND {
     match window.window_handle().expect("window handle").as_raw() {
         RawWindowHandle::Win32(h) => HWND(h.hwnd.get() as *mut _),
         _ => unreachable!("windows-only build"),
+    }
+}
+
+/// A plain `SetForegroundWindow` (what winit's `focus_window()` calls)
+/// silently fails when called from a background process that isn't already
+/// the foreground app - which is *always* the case for us, since we're a
+/// resident hub being summoned via a global hotkey or another process's IPC
+/// ping, never the process the user was just interacting with. Without a
+/// real focus grant, the window shows but can't receive keyboard input, and
+/// is one stray event away from immediately re-triggering our own
+/// focus-lost auto-hide. The standard workaround: temporarily attach our
+/// input queue to the current foreground window's thread, which relaxes
+/// Windows' foreground-lock restriction for the duration of the call.
+fn force_foreground(hwnd: HWND) {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let current_thread = GetCurrentThreadId();
+
+        let attached = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+
+        let _ = SetForegroundWindow(hwnd);
+        let _ = BringWindowToTop(hwnd);
+
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
     }
 }
 
@@ -721,7 +752,7 @@ impl DrawerApp {
                 self.set_pos(self.layout.shown_x, y);
                 if t >= 1.0 {
                     self.state = DrawerState::Shown;
-                    self.window.focus_window();
+                    force_foreground(self.hwnd);
                 } else {
                     needs_more_frames = true;
                 }

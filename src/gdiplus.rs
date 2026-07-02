@@ -79,6 +79,12 @@ pub struct Surface {
     format_near: *mut GpStringFormat,
     format_center: *mut GpStringFormat,
     fonts: HashMap<u32, *mut GpFont>,
+    // Per-icon GDI+ bitmaps, keyed by the app's path. Built once and reused
+    // across frames instead of recreating a bitmap for every visible tile on
+    // every animation frame. Each wraps (does not copy) the caller's pixel
+    // buffer, so the buffer must outlive the cached bitmap - the app disposes
+    // via `invalidate_image` before dropping the backing pixels.
+    images: HashMap<String, *mut GpBitmap>,
 }
 
 impl Surface {
@@ -117,8 +123,19 @@ impl Surface {
 
             let mut gp_graphics: *mut GpGraphics = std::ptr::null_mut();
             GdipGetImageGraphicsContext(gp_bitmap as *mut GpImage, &mut gp_graphics);
+            // High-quality shape anti-aliasing with a half-pixel offset so
+            // rounded-rect edges land cleanly on the pixel grid instead of
+            // looking jagged.
             GdipSetSmoothingMode(gp_graphics, SmoothingModeAntiAlias);
-            GdipSetTextRenderingHint(gp_graphics, TextRenderingHintAntiAlias);
+            GdipSetPixelOffsetMode(gp_graphics, PixelOffsetModeHalf);
+            // Grid-fitted grayscale AA: snaps glyph stems to the pixel grid,
+            // which is what keeps Segoe UI crisp at small sizes instead of the
+            // soft/blurry look plain AntiAlias gives on a layered window.
+            // (ClearType is deliberately avoided - subpixel AA produces broken
+            // alpha / colour fringing on a per-pixel-alpha layered surface.)
+            GdipSetTextRenderingHint(gp_graphics, TextRenderingHintAntiAliasGridFit);
+            // Crisp icon downscaling (48px source -> ~36px tile).
+            GdipSetInterpolationMode(gp_graphics, InterpolationModeHighQualityBicubic);
 
             let mut font_family: *mut GpFontFamily = std::ptr::null_mut();
             let name = wide("Segoe UI");
@@ -151,6 +168,7 @@ impl Surface {
                 format_near,
                 format_center,
                 fonts: HashMap::new(),
+                images: HashMap::new(),
             }
         }
     }
@@ -247,23 +265,31 @@ impl Surface {
         }
     }
 
-    /// Draws a straight (non-premultiplied), RGBA-ordered image (as produced
-    /// by `icon::extract_icon_bgra`, which is already in the byte order GDI+
-    /// wants) scaled into `dst`. Takes the pixels pre-converted rather than
-    /// converting here, since this runs once per visible tile on every
-    /// frame - re-swapping bytes and re-allocating a copy each call would be
-    /// pure waste for pixels that never change between frames.
-    pub fn draw_bgra_image(&mut self, dst: (f32, f32, f32, f32), bgra: &[u8], src_w: u32, src_h: u32) {
+    /// Draws a BGRA image (as produced by `icon::extract_icon_bgra`, already
+    /// in GDI+'s native byte order) scaled into `dst`, caching the wrapping
+    /// `GpBitmap` under `key`. The bitmap wraps `bgra` without copying, so the
+    /// caller must keep that buffer alive until it calls `invalidate_image`.
+    pub fn draw_bgra_image(
+        &mut self,
+        key: &str,
+        dst: (f32, f32, f32, f32),
+        bgra: &[u8],
+        src_w: u32,
+        src_h: u32,
+    ) {
         unsafe {
-            let mut bitmap: *mut GpBitmap = std::ptr::null_mut();
-            GdipCreateBitmapFromScan0(
-                src_w as i32,
-                src_h as i32,
-                src_w as i32 * 4,
-                PIXEL_FORMAT_32BPP_ARGB,
-                Some(bgra.as_ptr()),
-                &mut bitmap,
-            );
+            let bitmap = *self.images.entry(key.to_string()).or_insert_with(|| {
+                let mut bitmap: *mut GpBitmap = std::ptr::null_mut();
+                GdipCreateBitmapFromScan0(
+                    src_w as i32,
+                    src_h as i32,
+                    src_w as i32 * 4,
+                    PIXEL_FORMAT_32BPP_ARGB,
+                    Some(bgra.as_ptr()),
+                    &mut bitmap,
+                );
+                bitmap
+            });
             GdipDrawImageRect(
                 self.gp_graphics,
                 bitmap as *mut GpImage,
@@ -272,7 +298,14 @@ impl Surface {
                 dst.2,
                 dst.3,
             );
-            GdipDisposeImage(bitmap as *mut GpImage);
+        }
+    }
+
+    /// Disposes the cached bitmap for `key` (if any). Must be called before
+    /// the pixel buffer that bitmap wraps is freed.
+    pub fn invalidate_image(&mut self, key: &str) {
+        if let Some(bitmap) = self.images.remove(key) {
+            unsafe { GdipDisposeImage(bitmap as *mut GpImage) };
         }
     }
 
@@ -313,6 +346,9 @@ impl Drop for Surface {
         unsafe {
             for font in self.fonts.values() {
                 GdipDeleteFont(*font);
+            }
+            for bitmap in self.images.values() {
+                GdipDisposeImage(*bitmap as *mut GpImage);
             }
             GdipDeleteStringFormat(self.format_near);
             GdipDeleteStringFormat(self.format_center);

@@ -164,6 +164,9 @@ pub struct DrawerApp {
     hovered: Hovered,
     mouse: (f32, f32),
     ctrl_held: bool,
+    // Whether the window currently holds keyboard focus - drives the search
+    // caret so it's visible that typing will land in the search box.
+    focused: bool,
     scroll: f32,
     hover_alpha: HashMap<String, f32>,
     last_tick: Instant,
@@ -284,6 +287,7 @@ impl DrawerApp {
             hovered: Hovered::None,
             mouse: (0.0, 0.0),
             ctrl_held: false,
+            focused: false,
             scroll: 0.0,
             hover_alpha: HashMap::new(),
             last_tick: Instant::now(),
@@ -542,21 +546,29 @@ impl DrawerApp {
             argb(30, 255, 255, 255),
         );
 
-        // Search pill.
+        // Search pill. It brightens slightly while the window holds keyboard
+        // focus, so a click visibly "activates" it.
         let search_x = (m_window_w - self.metrics.search_w) / 2.0;
         let search_y = self.metrics.padding;
+        let pill_alpha = if self.focused { 26 } else { 16 };
         self.renderer.surface.fill_rounded_rect(
             search_x,
             search_y,
             self.metrics.search_w,
             self.metrics.search_h,
             self.metrics.search_h / 2.0,
-            argb(16, 255, 255, 255),
+            argb(pill_alpha, 255, 255, 255),
         );
+        // Caret is shown only while focused, so it reads as a live text field.
+        let caret = if self.focused { "\u{2502}" } else { "" };
         let display_text = if self.search.is_empty() {
-            "Search apps...".to_string()
+            if self.focused {
+                format!("{caret} Search apps...")
+            } else {
+                "Search apps...".to_string()
+            }
         } else {
-            format!("{}\u{2502}", self.search)
+            format!("{}{caret}", self.search)
         };
         let text_color = if self.search.is_empty() {
             argb(140, 255, 255, 255)
@@ -608,6 +620,7 @@ impl DrawerApp {
             if let Some((bgra, iw, ih)) = self.icons.get(&app_entry.path) {
                 let icon_size = self.metrics.icon;
                 self.renderer.surface.draw_bgra_image(
+                    &app_entry.path,
                     (
                         r.x + (r.w - icon_size) / 2.0,
                         r.y + 8.0 * self.metrics.scale,
@@ -758,6 +771,7 @@ impl DrawerApp {
         match event {
             WindowEvent::RedrawRequested => self.render(),
             WindowEvent::Focused(focused) => {
+                self.focused = focused;
                 // Click-away to dismiss. Windows can deliver a stray/duplicate
                 // focus-lost message in the first moment after we forcibly
                 // grab foreground focus (see `force_foreground`); a short
@@ -770,6 +784,7 @@ impl DrawerApp {
                 if !focused && past_grace && matches!(self.state, DrawerState::Shown) {
                     self.begin_close(event_loop);
                 }
+                self.render();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = (position.x as f32, position.y as f32);
@@ -812,6 +827,14 @@ impl DrawerApp {
     }
 
     fn handle_left_click(&mut self, event_loop: &ActiveEventLoop) {
+        // A layered, no-activate window doesn't reliably take keyboard focus
+        // just from being clicked, which made the search box feel dead
+        // ("clicking it does nothing"). Force foreground focus on any click so
+        // typing lands in the search box immediately.
+        if !self.focused {
+            force_foreground(self.hwnd);
+            self.focused = true;
+        }
         match self.hovered {
             Hovered::App(i) => {
                 if let Some(app_entry) = self.filtered.get(i) {
@@ -824,6 +847,9 @@ impl DrawerApp {
                 if let Some(app_entry) = self.filtered.get(i) {
                     let path = app_entry.path.clone();
                     self.config.remove_app(&path);
+                    // Dispose the cached GDI+ bitmap before freeing the pixel
+                    // buffer it wraps.
+                    self.renderer.surface.invalidate_image(&path);
                     self.icons.remove(&path);
                     self.hover_alpha.remove(&path);
                     self.hovered = Hovered::None;
@@ -856,6 +882,7 @@ impl DrawerApp {
                 if let Some(app_entry) = self.filtered.get(i) {
                     let path = app_entry.path.clone();
                     self.config.remove_app(&path);
+                    self.renderer.surface.invalidate_image(&path);
                     self.icons.remove(&path);
                     self.hover_alpha.remove(&path);
                 }

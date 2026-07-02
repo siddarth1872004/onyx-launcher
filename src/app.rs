@@ -168,6 +168,7 @@ pub struct DrawerApp {
     scroll: f32,
     hover_alpha: HashMap<String, f32>,
     last_tick: Instant,
+    frame_interval: std::time::Duration,
 }
 
 fn hwnd_of(window: &Window) -> HWND {
@@ -185,11 +186,21 @@ impl DrawerApp {
         category: Option<String>,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ) -> Self {
-        let scale = event_loop
-            .primary_monitor()
+        let primary_monitor = event_loop.primary_monitor();
+        let scale = primary_monitor
+            .as_ref()
             .map(|m| m.scale_factor() as f32)
             .unwrap_or(1.0);
         let metrics = Metrics::compute(scale);
+
+        // Pace animation frames to the real display refresh rate instead of
+        // busy-polling as fast as possible, which reads as jittery.
+        let refresh_millihertz = primary_monitor
+            .as_ref()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .unwrap_or(60_000);
+        let frame_interval =
+            std::time::Duration::from_secs_f64(1000.0 / refresh_millihertz as f64);
 
         let window_w = metrics.window_w.round() as i32;
         let window_h = metrics.window_h.round() as i32;
@@ -222,6 +233,9 @@ impl DrawerApp {
         window.set_system_backdrop(BackdropType::TransientWindow);
         window.set_corner_preference(CornerPreference::Round);
         window.set_skip_taskbar(true);
+        // DWM draws a thin accent-colored 1px border around rounded-corner
+        // windows by default; we don't want that outline, just the rounding.
+        window.set_border_color(None);
 
         let (tx, rx) = std::sync::mpsc::channel();
         ipc::spawn_listener(listener, tx, move || {
@@ -256,6 +270,7 @@ impl DrawerApp {
             scroll: 0.0,
             hover_alpha: HashMap::new(),
             last_tick: Instant::now(),
+            frame_interval,
         };
         app.request(category, event_loop);
         app
@@ -264,6 +279,15 @@ impl DrawerApp {
     fn set_pos(&mut self, x: i32, y: i32) {
         self.pos = (x, y);
         self.window.set_outer_position(PhysicalPosition::new(x, y));
+    }
+
+    /// Schedules the next animation tick at the display's true refresh
+    /// interval, rather than busy-polling as fast as the OS will allow
+    /// (which produces uneven, jittery frame delivery).
+    fn schedule_next_frame(&self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+            Instant::now() + self.frame_interval,
+        ));
     }
 
     fn toggle_visibility(&mut self, event_loop: &ActiveEventLoop) {
@@ -282,7 +306,7 @@ impl DrawerApp {
                 self.state = DrawerState::SlidingUp { start: now };
             }
         }
-        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        self.schedule_next_frame(event_loop);
         self.render();
     }
 
@@ -311,7 +335,7 @@ impl DrawerApp {
             DrawerState::Hidden => self.toggle_visibility(event_loop),
             DrawerState::SlidingDown { .. } => {
                 self.state = DrawerState::SlidingUp { start: Instant::now() };
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                self.schedule_next_frame(event_loop);
             }
             DrawerState::Shown | DrawerState::SlidingUp { .. } => {}
         }
@@ -713,11 +737,11 @@ impl DrawerApp {
             self.render();
         }
 
-        event_loop.set_control_flow(if needs_more_frames {
-            winit::event_loop::ControlFlow::Poll
+        if needs_more_frames {
+            self.schedule_next_frame(event_loop);
         } else {
-            winit::event_loop::ControlFlow::Wait
-        });
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
     }
 
     pub fn window_event(
@@ -732,7 +756,7 @@ impl DrawerApp {
                 self.focused = focused;
                 if !focused && matches!(self.state, DrawerState::Shown) {
                     self.state = DrawerState::SlidingDown { start: Instant::now() };
-                    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                    self.schedule_next_frame(event_loop);
                     self.render();
                 }
             }
@@ -741,7 +765,7 @@ impl DrawerApp {
                 let hovered = self.hit_test(self.mouse.0, self.mouse.1);
                 if hovered != self.hovered {
                     self.hovered = hovered;
-                    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                    self.schedule_next_frame(event_loop);
                     self.render();
                 }
             }

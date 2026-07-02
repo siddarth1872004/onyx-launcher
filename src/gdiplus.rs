@@ -198,6 +198,9 @@ impl Surface {
                     TextAlign::Center => StringAlignmentCenter,
                 },
             );
+            // Vertically center within the layout rect; GDI+ defaults to
+            // top-aligned otherwise, which looks off in a pill/tile.
+            GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
 
             let mut brush: *mut GpSolidFill = std::ptr::null_mut();
             GdipCreateSolidFill(argb, &mut brush);

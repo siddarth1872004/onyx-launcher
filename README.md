@@ -9,17 +9,17 @@ Onyx Launcher is a near-instant, GPU-driver-free app drawer for Windows 10 and 1
 ```mermaid
 graph TB
     subgraph WIN32["Windows OS Subsystems"]
-        SHELL[Win32 Shell & Taskbar]
-        DWM[Desktop Window Manager DWM]
-        GDI[GDI+ / Shell ExtractIcon]
+        SHELL["Win32 Shell and Taskbar"]
+        DWM["Desktop Window Manager DWM"]
+        GDI["GDI+ and Shell ExtractIcon"]
     end
 
     subgraph ONYX["Onyx Launcher Rust Core"]
-        SINGLE[Single Instance Guard Mutex]
-        CFG[Config & Shortcut Parser JSON]
-        ICON[Async Icon Extractor & Cache]
-        GUI[Eframe / Egui UI Renderer]
-        GEOM[Taskbar Geometry & Anchor Evaluator]
+        SINGLE["Single Instance Guard Mutex"]
+        CFG["Config and Shortcut Parser JSON"]
+        ICON["Async Icon Extractor and Cache"]
+        GUI["Eframe and Egui UI Renderer"]
+        GEOM["Taskbar Geometry and Anchor Evaluator"]
     end
 
     SHELL -->|HotKey / Click| SINGLE
@@ -29,7 +29,7 @@ graph TB
     ICON -->|Extract HICON| GDI
     ICON -->|RGBA Conversion| GUI
     CFG -->|Parse App Shortcuts| GUI
-    GUI -->|Render Grid & Search| DWM
+    GUI -->|Render Grid and Search| DWM
 
     style WIN32 fill:#18181b,stroke:#a1a1aa,color:#fff
     style ONYX fill:#000000,stroke:#ffffff,color:#fff

@@ -1,6 +1,6 @@
 [package]
 name = "onyx-launcher"
-version = "0.1.7"
+version = "0.1.0"
 edition = "2024"
 description = "A near-instant, GPU-driver-free app drawer that slides up from the Windows taskbar."
 license = "MIT"

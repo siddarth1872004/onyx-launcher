@@ -1,16 +1,102 @@
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::SIZE;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetObjectW, ReleaseDC,
+    SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
 };
-use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows::Win32::System::Com::{CoInitializeEx, IBindCtx, COINIT_APARTMENTTHREADED};
+use windows::Win32::UI::Shell::{
+    SHCreateItemFromParsingName, SHGetFileInfoW, IShellItemImageFactory, SHFILEINFOW, SHGFI_ICON,
+    SHGFI_LARGEICON, SIIGBF_ICONONLY,
+};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL};
 
-/// Extracts the large icon associated with an executable and returns
-/// (BGRA8 pixels, width, height) - the byte order GDI+/Windows DIBs use
-/// natively, so callers can hand this straight to `Surface::draw_bgra_image`
-/// every frame with no per-frame conversion. Returns `None` on any failure.
+/// Extracts the icon associated with an executable at `size` x `size` pixels
+/// and returns (BGRA8 pixels, width, height) - the byte order GDI+/Windows
+/// DIBs use natively, so callers can hand this straight to
+/// `Surface::draw_bgra_image`. Returns `None` on any failure.
+///
+/// The primary path renders the icon through the shell's image factory (the
+/// same one Explorer uses), which produces a crisp image at exactly the
+/// requested size by scaling from the best-matching resolution embedded in
+/// the exe. That's what keeps icons sharp instead of the blurry look you get
+/// from grabbing the fixed 32px shell icon and stretching it up.
 pub fn extract_icon_bgra(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
+    shell_image(exe_path, size).or_else(|| legacy_icon(exe_path, size))
+}
+
+/// High-quality path: `IShellItemImageFactory::GetImage` at the exact target
+/// size.
+fn shell_image(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
+    unsafe {
+        // GetImage needs COM on this thread. It's already initialised by the
+        // time we render (winit does it), but initialising again is cheap and
+        // idempotent - we deliberately never uninitialise.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+        let wide: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
+        let factory: IShellItemImageFactory =
+            SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None::<&IBindCtx>).ok()?;
+        let hbitmap = factory
+            .GetImage(SIZE { cx: size, cy: size }, SIIGBF_ICONONLY)
+            .ok()?;
+        let out = bitmap_to_bgra(hbitmap);
+        let _ = DeleteObject(hbitmap.into());
+        out
+    }
+}
+
+/// Copies a 32bpp top-down HBITMAP (as returned by `GetImage`, premultiplied
+/// BGRA) into a straight-alpha BGRA buffer our draw path can consume.
+unsafe fn bitmap_to_bgra(hbitmap: HBITMAP) -> Option<(Vec<u8>, u32, u32)> {
+    let mut bm = BITMAP::default();
+    let n = unsafe {
+        GetObjectW(
+            hbitmap.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut _),
+        )
+    };
+    if n == 0 || bm.bmBits.is_null() || bm.bmBitsPixel != 32 {
+        return None;
+    }
+    let w = bm.bmWidth.max(0) as usize;
+    let h = bm.bmHeight.unsigned_abs() as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let stride = bm.bmWidthBytes as usize;
+    let src = bm.bmBits as *const u8;
+
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.add(y * stride),
+                out.as_mut_ptr().add(y * w * 4),
+                w * 4,
+            );
+        }
+    }
+
+    // GetImage hands back premultiplied alpha; undo it so the straight-alpha
+    // ARGB draw path doesn't double-darken the anti-aliased edges.
+    for px in out.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        if a != 0 && a != 255 {
+            px[0] = ((px[0] as u32 * 255 + a / 2) / a).min(255) as u8;
+            px[1] = ((px[1] as u32 * 255 + a / 2) / a).min(255) as u8;
+            px[2] = ((px[2] as u32 * 255 + a / 2) / a).min(255) as u8;
+        }
+    }
+
+    Some((out, w as u32, h as u32))
+}
+
+/// Fallback: the classic shell large-icon (~32px) drawn into a `size` DIB.
+/// Lower quality, but a safety net for anything the image factory can't
+/// resolve.
+fn legacy_icon(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
     unsafe {
         let wide: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
         let mut shfi = SHFILEINFOW::default();
@@ -73,7 +159,6 @@ pub fn extract_icon_bgra(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32
         ReleaseDC(None, hdc_screen);
         let _ = DestroyIcon(hicon);
 
-        // Already BGRA (DrawIconEx's native order) - no channel swap needed.
         // Some legacy icons don't carry a real alpha channel; if the whole
         // buffer came back fully transparent, treat any non-black pixel as
         // opaque so the icon doesn't disappear.

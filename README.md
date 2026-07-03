@@ -21,12 +21,13 @@ For the full walkthrough — pinning apps, categories, uninstalling, troubleshoo
 
 Onyx Launcher is a Spotlight-style pinned-app drawer for Windows 11. Click its pinned taskbar icon and it slides up out of the taskbar as a rounded-corner, near-opaque black panel. Click a tile to launch, right-click to remove, type to filter. Click the icon again (or click away) and it slides back down.
 
-It started as a fairly conventional `egui`/OpenGL app and was later rewritten from scratch on plain GDI+ specifically to strip out the GPU driver dependency — see [Architecture](#architecture) for why that mattered.
+Its renderer is hand-written on plain GDI+ specifically to avoid any GPU driver dependency — see [Architecture](#architecture) for why that mattered.
 
 ## Features
 
 - **Dead-simple lifecycle, reopens every time** — the process runs *only while the drawer is on screen*. Dismissing it (click away, `Esc`, launch an app, or click the pin again) exits the process entirely, so there's never a hidden background instance to get "stuck". Reopening is just launching the exe again, which the OS does reliably — no resident hub, no wake-up channel that can silently fail.
 - **Native Windows 11 look** — rounded, near-opaque black panel with real per-pixel alpha compositing via `UpdateLayeredWindow`, not a faked shape.
+- **Crisp at any DPI** — app icons are pulled through the shell's image factory at the exact on-screen pixel size (the same path Explorer uses), and text is grid-fitted, so both stay sharp instead of blurry on scaled displays.
 - **Search-as-you-type**, with clipboard paste (`Ctrl+V`) support.
 - **Scrollable grid** for when you've pinned more apps than fit on one screen.
 - **DPI-aware and follows your cursor's monitor** — same physical size on 100%/150%/200% scaled displays, and opens on whichever screen you're currently on, not a fixed monitor.
@@ -45,13 +46,13 @@ The whole point of this project was chasing "how light can a real, good-looking 
 | RAM / CPU while closed | none — the process doesn't exist |
 | GPU driver dependency | None |
 
-That last line is the interesting one. The first version used `egui`/`eframe` over OpenGL, which is a perfectly good stack — but loading a real OpenGL context pulls in your GPU vendor's driver DLLs (shader compiler, command buffer infrastructure, the works), which alone accounts for tens of MB of resident memory regardless of how lean the application code is. Onyx Launcher's renderer is hand-written on top of **GDI+** — a plain system DLL every Windows process already has access to — composited onto the window via `UpdateLayeredWindow` for real per-pixel alpha. No GPU context, no shader compiler, no vendor driver ever loads.
+That last line is the interesting one. An immediate-mode UI stack like `egui`/`eframe` over OpenGL is a perfectly good choice in general — but loading a real OpenGL context pulls in your GPU vendor's driver DLLs (shader compiler, command buffer infrastructure, the works), which alone accounts for tens of MB of resident memory regardless of how lean the application code is. Onyx Launcher's renderer is instead hand-written on top of **GDI+** — a plain system DLL every Windows process already has access to — composited onto the window via `UpdateLayeredWindow` for real per-pixel alpha. No GPU context, no shader compiler, no vendor driver ever loads.
 
-(An earlier version also enabled DWM's acrylic backdrop material, but it turned out to paint across the window's full rectangular bounds regardless of our rounded alpha shape - producing a visible grey fringe outside the rounded corners. Since the panel is already ~96% opaque, the live blur wasn't adding much, so it was dropped in favor of clean corners.)
+(DWM's acrylic backdrop material would paint across the window's full rectangular bounds regardless of our rounded alpha shape — producing a visible grey fringe outside the rounded corners — so it's deliberately not used. The panel is already ~96% opaque, so live blur wouldn't add much anyway, and skipping it keeps the corners clean.)
 
 The tradeoff: no immediate-mode UI framework to lean on. Hit-testing, hover state, text input, and layout are all hand-rolled in `app.rs`.
 
-On top of the RAM/binary-size numbers, the render path itself is tuned to do near-zero allocation per frame: GDI+ brushes, string formats, and fonts are created once and reused (not recreated on every fill/text call), icon pixel data is decoded once per app and cached in the byte order GDI+ wants natively (no per-frame format conversion or buffer copy), and the pinned-app list is only re-filtered when the search text or app list actually changes rather than on every mouse move. Animations and hover transitions stay pegged to the display's real refresh rate with no busy-polling, so idle CPU stays at 0% and interaction stays smooth without burning cycles reconstructing the same GDI+ objects dozens of times a frame.
+On top of the RAM/binary-size numbers, the render path itself is tuned to do near-zero allocation per frame: GDI+ brushes, string formats, fonts, and per-icon bitmaps are all created once and reused (not recreated on every fill/text/icon draw), icons are decoded once per app at their exact display size in the byte order GDI+ wants natively (no per-frame format conversion, scaling, or buffer copy), and the pinned-app list is only re-filtered when the search text or app list actually changes rather than on every mouse move. Animations and hover transitions stay pegged to the display's real refresh rate with no busy-polling, so idle CPU stays at 0% and interaction stays smooth without burning cycles reconstructing the same GDI+ objects dozens of times a frame.
 
 ## Usage
 
@@ -87,7 +88,7 @@ The lifecycle is the load-bearing design decision: **a process lives only while 
 - `src/main.rs` — a `winit`-based event loop (window/input handling only — no rendering backend).
 - `src/single_instance.rs` — the named mutex + event coordination and the exit-on-hide guarantee described above.
 - `src/config.rs` — per-category JSON config, with category identity derived purely from the running exe's filename.
-- `src/icon.rs` — extracts `.exe` icons via `SHGetFileInfoW` + GDI for display in the grid.
+- `src/icon.rs` — extracts crisp, display-sized `.exe` icons via `IShellItemImageFactory` (with an `SHGetFileInfoW` fallback) for display in the grid.
 - `src/resource_icon.rs` — the reverse: patches a *new* icon resource into a copied `.exe` (used by the category maker), via `BeginUpdateResourceW`/`UpdateResourceW`.
 - `src/geometry.rs` — computes the taskbar-flush, bottom-center window position from monitor work-area info.
 

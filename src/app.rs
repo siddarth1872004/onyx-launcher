@@ -348,7 +348,11 @@ impl DrawerApp {
     /// just to dodge the borrow checker.
     fn ensure_icon(&mut self, path: &str) {
         if !self.icons.contains_key(path) {
-            if let Some(icon) = icon::extract_icon_bgra(path, 48) {
+            // Extract at the exact on-screen pixel size (DPI-scaled) so the
+            // shell renders it crisply and we draw it 1:1 - no up/downscaling
+            // blur.
+            let px = (self.metrics.icon.round() as i32).max(16);
+            if let Some(icon) = icon::extract_icon_bgra(path, px) {
                 self.icons.insert(path.to_string(), icon);
             }
         }
@@ -618,14 +622,17 @@ impl DrawerApp {
 
             self.ensure_icon(&app_entry.path);
             if let Some((bgra, iw, ih)) = self.icons.get(&app_entry.path) {
-                let icon_size = self.metrics.icon;
+                // Draw the icon 1:1 at its extracted pixel size, snapped to
+                // whole pixels, so it stays razor-sharp.
+                let dw = *iw as f32;
+                let dh = *ih as f32;
                 self.renderer.surface.draw_bgra_image(
                     &app_entry.path,
                     (
-                        r.x + (r.w - icon_size) / 2.0,
-                        r.y + 8.0 * self.metrics.scale,
-                        icon_size,
-                        icon_size,
+                        (r.x + (r.w - dw) / 2.0).round(),
+                        (r.y + 8.0 * self.metrics.scale).round(),
+                        dw,
+                        dh,
                     ),
                     bgra,
                     *iw,

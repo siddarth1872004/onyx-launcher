@@ -648,17 +648,27 @@ impl DrawerApp {
                 TextAlign::Center,
             );
 
+            // Remove button: a round "×" badge in the tile's top-right corner
+            // that fades in on hover, turning red when the cursor is over it so
+            // it clearly reads as "click to remove".
             if hover_t > 0.05 {
+                let badge = self.metrics.remove_badge;
+                let bx = r.x + r.w - badge;
+                let by = r.y;
+                let over_badge = matches!(self.hovered, Hovered::AppRemove(idx) if idx == i);
+                let bg = if over_badge {
+                    argb((235.0 * hover_t) as u8, 224, 64, 64)
+                } else {
+                    argb((150.0 * hover_t) as u8, 32, 32, 32)
+                };
+                self.renderer
+                    .surface
+                    .fill_rounded_rect(bx, by, badge, badge, badge / 2.0, bg);
                 self.renderer.surface.draw_text(
                     "\u{2715}",
-                    (
-                        r.x + r.w - self.metrics.remove_badge,
-                        r.y,
-                        self.metrics.remove_badge,
-                        self.metrics.remove_badge,
-                    ),
-                    self.metrics.font(10.0),
-                    argb((200.0 * hover_t) as u8, 255, 255, 255),
+                    (bx, by - self.metrics.scale, badge, badge),
+                    self.metrics.font(9.0),
+                    argb((255.0 * hover_t) as u8, 255, 255, 255),
                     TextAlign::Center,
                 );
             }

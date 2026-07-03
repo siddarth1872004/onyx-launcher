@@ -2,7 +2,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::SIZE;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetObjectW, ReleaseDC,
-    SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
+    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIBSECTION, DIB_RGB_COLORS, HBITMAP,
 };
 use windows::Win32::System::Com::{CoInitializeEx, IBindCtx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::Shell::{
@@ -46,33 +46,45 @@ fn shell_image(exe_path: &str, size: i32) -> Option<(Vec<u8>, u32, u32)> {
     }
 }
 
-/// Copies a 32bpp top-down HBITMAP (as returned by `GetImage`, premultiplied
-/// BGRA) into a straight-alpha BGRA buffer our draw path can consume.
+/// Copies a 32bpp premultiplied-BGRA HBITMAP (as returned by `GetImage`) into
+/// a straight-alpha, top-down BGRA buffer our draw path can consume. Reads the
+/// DIB header's `biHeight` sign to know the source orientation and flips a
+/// bottom-up DIB, rather than assuming - `GetImage` hands back a bottom-up DIB
+/// on some systems, which showed up as upside-down icons.
 unsafe fn bitmap_to_bgra(hbitmap: HBITMAP) -> Option<(Vec<u8>, u32, u32)> {
-    let mut bm = BITMAP::default();
+    let mut ds = DIBSECTION::default();
     let n = unsafe {
         GetObjectW(
             hbitmap.into(),
-            std::mem::size_of::<BITMAP>() as i32,
-            Some(&mut bm as *mut _ as *mut _),
+            std::mem::size_of::<DIBSECTION>() as i32,
+            Some(&mut ds as *mut _ as *mut _),
         )
     };
-    if n == 0 || bm.bmBits.is_null() || bm.bmBitsPixel != 32 {
+    // A DIB section returns the full DIBSECTION; anything smaller means we
+    // couldn't read the header we need.
+    if n < std::mem::size_of::<DIBSECTION>() as i32
+        || ds.dsBm.bmBits.is_null()
+        || ds.dsBm.bmBitsPixel != 32
+    {
         return None;
     }
-    let w = bm.bmWidth.max(0) as usize;
-    let h = bm.bmHeight.unsigned_abs() as usize;
+    let w = ds.dsBm.bmWidth.max(0) as usize;
+    let h = ds.dsBm.bmHeight.unsigned_abs() as usize;
     if w == 0 || h == 0 {
         return None;
     }
-    let stride = bm.bmWidthBytes as usize;
-    let src = bm.bmBits as *const u8;
+    let stride = ds.dsBm.bmWidthBytes as usize;
+    let src = ds.dsBm.bmBits as *const u8;
+    // biHeight < 0 => top-down (memory row 0 is the visual top); biHeight > 0
+    // => bottom-up (memory row 0 is the visual bottom, so read in reverse).
+    let bottom_up = ds.dsBmih.biHeight > 0;
 
     let mut out = vec![0u8; w * h * 4];
     for y in 0..h {
+        let src_row = if bottom_up { h - 1 - y } else { y };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                src.add(y * stride),
+                src.add(src_row * stride),
                 out.as_mut_ptr().add(y * w * 4),
                 w * 4,
             );

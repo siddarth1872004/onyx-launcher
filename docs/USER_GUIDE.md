@@ -51,9 +51,9 @@ Onyx Launcher only runs while its drawer is actually on screen. The moment you d
 
 ## Pinning apps
 
-Click the **+ Add app** tile in the grid. A native file picker opens — navigate to any `.exe` and select it. It's added to the grid immediately with its real icon extracted straight from the executable.
+Click the **+ Add app** tile in the grid. A native file picker opens — pick an `.exe`, a `.lnk` shortcut, or (via the "All files" filter) any document, folder, or file you want quick access to. It's added to the grid immediately with its real icon, and it launches through the Windows shell, so shortcuts and file associations all work the way you'd expect.
 
-There's no limit on how many apps you can pin. If you pin more than fit on one screen, the grid scrolls (see [Searching](#searching) below for the mouse/keyboard scroll behavior).
+There's no limit on how many apps you can pin. The panel grows to fit them and, once there are more than fit at a comfortable size, the grid scrolls. With only a few pinned, the panel stays compact rather than showing a big empty box.
 
 ## Opening and closing the drawer
 
@@ -64,13 +64,17 @@ There's no limit on how many apps you can pin. If you pin more than fit on one s
 
 Closing genuinely exits the program (it doesn't linger in the background), and opening launches it fresh — so reopening works every single time, with no way for it to get "stuck".
 
-## Searching
+## Searching and keyboard navigation
 
-Just start typing while the drawer is open — no need to click into a search box first. The grid filters to matching app names as you type.
+Just start typing while the drawer is open — no need to click into a search box first. The grid filters to matching app names as you type, and the top result is automatically selected so you can launch it instantly.
 
+- **`Enter`** launches the selected app.
+- **Arrow keys** move the selection around the grid (it scrolls into view automatically).
 - `Ctrl+V` pastes clipboard text into the search field.
-- `Esc` clears the current search.
-- Scroll with the mouse wheel (or trackpad) if you have more pinned apps than fit on screen.
+- `Esc` clears the current search; press it again (with the search empty) to dismiss the drawer.
+- The mouse works too — hovering a tile selects it, so `Enter` launches whatever you last pointed at. Scroll with the wheel/trackpad if you have more pinned apps than fit.
+
+So a typical flow is: summon the drawer, type a few letters, press `Enter` — no mouse needed.
 
 ## Removing a pinned app
 

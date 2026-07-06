@@ -90,7 +90,9 @@ sequenceDiagram
 ## Key Features and System Performance
 
 - **Zero Idle Background Overhead**: no persistent tray process or service. It runs only while the drawer is visible and exits on dismissal, so reopening is always a clean fresh launch that can never get "stuck".
-- **Ultra-Lean Resource Footprint**: size-optimized release build (`opt-level = "s"`, LTO, symbol stripping, `panic = "abort"`) -- ~470KB binary, ~27MB RAM while open, 0% idle CPU.
+- **Ultra-Lean Resource Footprint**: size-optimized release build (`opt-level = "s"`, LTO, symbol stripping, `panic = "abort"`) -- ~410KB binary, ~27MB RAM while open, 0% idle CPU. The panel sizes itself to exactly the rows it needs, so fewer pinned apps means a smaller window and a smaller surface to composite.
+- **Fully keyboard-driven**: type to filter, arrow keys to move the selection, `Enter` to launch, `Esc` to clear the search or dismiss -- no mouse required. The mouse works too, and hover keeps the keyboard selection in sync.
+- **Robust launching**: apps run through the shell's `open` verb, so they start with their own folder as the working directory (games and apps that load resources relatively don't break), and you can pin `.exe`s, `.lnk` shortcuts, documents, folders, or anything else the shell can open.
 - **Crisp at Any DPI**: app icons are pulled through the shell's `IShellItemImageFactory` at the exact on-screen pixel size (the same path Explorer uses) and drawn 1:1; text is grid-fitted. Both stay sharp on 100% / 150% / 200% displays instead of blurry.
 - **Follows Your Cursor's Monitor**: positions itself flush above the taskbar on the monitor the cursor is currently on, using the monitor work area and DPI scale.
 - **Search-as-You-Type**: substring filtering with `Ctrl+V` paste; click a tile to launch, right-click (or the hover "x" badge) to remove.

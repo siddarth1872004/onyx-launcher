@@ -9,10 +9,12 @@ use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, Ope
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, BringWindowToTop, CreatePopupMenu, DestroyMenu, GetForegroundWindow,
     GetWindowLongPtrW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowLongPtrW,
-    TrackPopupMenu, GWL_EXSTYLE, MF_STRING, TPM_NONOTIFY, TPM_RETURNCMD, WS_EX_LAYERED,
+    TrackPopupMenu, GWL_EXSTYLE, MF_STRING, SW_SHOWNORMAL, TPM_NONOTIFY, TPM_RETURNCMD,
+    WS_EX_LAYERED,
 };
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -54,6 +56,35 @@ const LOGICAL_SCROLLBAR_W: f32 = 4.0;
 
 fn argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
     ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Launches `path` through the shell's `open` verb rather than spawning it
+/// directly. This is what makes the launcher actually correct: `ShellExecuteW`
+/// runs `.exe`s with their own folder as the working directory (many apps and
+/// games load resources relative to it and break otherwise), and it also
+/// resolves `.lnk` shortcuts, documents, folders, and URLs - none of which a
+/// raw `CreateProcess`/`Command::spawn` can launch.
+fn launch(path: &str) {
+    let file = wide(path);
+    let verb = wide("open");
+    let dir = std::path::Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| wide(&p.to_string_lossy()));
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+            SW_SHOWNORMAL,
+        );
+    }
 }
 
 fn ease_out_smooth(t: f32) -> f32 {
@@ -158,6 +189,9 @@ pub struct DrawerApp {
     // pinned-app list does.
     filtered: Vec<crate::config::AppEntry>,
     search: String,
+    // Keyboard/hover selection: index into `filtered`. Highlighted in the
+    // grid, launched on Enter, moved with the arrow keys.
+    selected: Option<usize>,
     state: DrawerState,
     layout: DrawerLayout,
     pos: (i32, i32),
@@ -218,7 +252,23 @@ impl DrawerApp {
             .as_ref()
             .map(|m| m.scale_factor() as f32)
             .unwrap_or(1.0);
-        let metrics = Metrics::compute(scale);
+        let mut metrics = Metrics::compute(scale);
+
+        // Load the pinned-app list up front so the panel can be sized to fit
+        // exactly the rows it needs. A fresh process is created every time the
+        // drawer opens, so sizing here (rather than resizing at runtime) is
+        // both simplest and cheapest - fewer apps means a smaller window and
+        // a smaller off-screen surface to clear and composite each frame.
+        let config = Config::load(category.as_deref());
+        let columns = metrics.columns();
+        let tiles = config.apps.len() + 1; // +1 for the "Add app" tile
+        let rows = tiles.div_ceil(columns).max(1);
+        let content_h = rows as f32 * (metrics.tile_h + metrics.gap) - metrics.gap;
+        let bottom_pad = metrics.padding * 0.7;
+        let ideal_h = metrics.grid_top + content_h + bottom_pad;
+        let min_h = metrics.grid_top + metrics.tile_h + bottom_pad;
+        let max_h = LOGICAL_WINDOW_H * scale;
+        metrics.window_h = ideal_h.clamp(min_h, max_h);
 
         // Pace animation frames to the real display refresh rate instead of
         // busy-polling as fast as possible, which reads as jittery.
@@ -277,10 +327,11 @@ impl DrawerApp {
             hwnd,
             renderer: Renderer::new(window_w, window_h),
             metrics,
-            config: Config::load(category.as_deref()),
+            config,
             icons: HashMap::new(),
             filtered: Vec::new(),
             search: String::new(),
+            selected: None,
             state: DrawerState::SlidingUp { start: Instant::now() },
             layout,
             pos: (layout.hidden_x, layout.hidden_y),
@@ -405,6 +456,65 @@ impl DrawerApp {
             .filter(|a| search_lower.is_empty() || a.name.to_lowercase().contains(&search_lower))
             .cloned()
             .collect();
+
+        // Keep the selection sensible: while searching, pre-select the top
+        // result so Enter launches it; otherwise keep the current selection if
+        // it's still in range, else clear it.
+        self.selected = if self.filtered.is_empty() {
+            None
+        } else if !self.search.is_empty() {
+            Some(0)
+        } else {
+            self.selected.filter(|&i| i < self.filtered.len())
+        };
+    }
+
+    /// Moves the keyboard selection by `dcol` columns and `drow` rows within
+    /// the grid, clamping to the ends, and scrolls it into view.
+    fn move_selection(&mut self, dcol: isize, drow: isize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let cols = self.metrics.columns() as isize;
+        let n = self.filtered.len() as isize;
+        let next = match self.selected {
+            None => 0,
+            Some(cur) => (cur as isize + dcol + drow * cols).clamp(0, n - 1),
+        };
+        self.selected = Some(next as usize);
+        self.scroll_to_selected();
+    }
+
+    /// Adjusts `scroll` so the selected tile is fully visible.
+    fn scroll_to_selected(&mut self) {
+        let Some(i) = self.selected else { return };
+        let row = (i / self.metrics.columns()) as f32;
+        let off_top = row * (self.metrics.tile_h + self.metrics.gap);
+        let off_bot = off_top + self.metrics.tile_h;
+        let content_h = self.content_area().h;
+        if off_top < self.scroll {
+            self.scroll = off_top;
+        } else if off_bot > self.scroll + content_h {
+            self.scroll = off_bot - content_h;
+        }
+        self.clamp_scroll(self.filtered.len() + 1);
+    }
+
+    /// Launches the currently selected app (used by Enter) and dismisses.
+    fn launch_selected(&mut self, event_loop: &ActiveEventLoop) {
+        let target = self.selected.or({
+            if !self.search.is_empty() && !self.filtered.is_empty() {
+                Some(0)
+            } else {
+                None
+            }
+        });
+        if let Some(i) = target {
+            if let Some(app) = self.filtered.get(i) {
+                launch(&app.path);
+            }
+            self.begin_close(event_loop);
+        }
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Hovered {
@@ -610,7 +720,14 @@ impl DrawerApp {
                 continue;
             }
             let hover_t = self.hover_value(&app_entry.path);
-            let fill_alpha = lerp(10.0, 28.0, hover_t) as u8;
+            // Selected tile (keyboard/hover) gets a clearly brighter fill than
+            // a plain hover, so the current target is obvious at a glance.
+            let base_fill = lerp(10.0, 28.0, hover_t);
+            let fill_alpha = if self.selected == Some(i) {
+                base_fill.max(42.0)
+            } else {
+                base_fill
+            } as u8;
             self.renderer.surface.fill_rounded_rect(
                 r.x,
                 r.y,
@@ -808,6 +925,11 @@ impl DrawerApp {
                 let hovered = self.hit_test(self.mouse.0, self.mouse.1);
                 if hovered != self.hovered {
                     self.hovered = hovered;
+                    // Keep keyboard selection in sync with the mouse so Enter
+                    // launches whatever you last pointed at.
+                    if let Hovered::App(i) | Hovered::AppRemove(i) = hovered {
+                        self.selected = Some(i);
+                    }
                     self.schedule_next_frame(event_loop);
                     self.render();
                 }
@@ -855,7 +977,7 @@ impl DrawerApp {
         match self.hovered {
             Hovered::App(i) => {
                 if let Some(app_entry) = self.filtered.get(i) {
-                    let _ = std::process::Command::new(&app_entry.path).spawn();
+                    launch(&app_entry.path);
                 }
                 // Launching dismisses the drawer (and exits the process).
                 self.begin_close(event_loop);
@@ -876,7 +998,8 @@ impl DrawerApp {
             }
             Hovered::Add => {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Executable", &["exe"])
+                    .add_filter("Apps & shortcuts", &["exe", "lnk"])
+                    .add_filter("All files", &["*"])
                     .pick_file()
                 {
                     let name = path
@@ -919,6 +1042,29 @@ impl DrawerApp {
             }
         }
         match event.logical_key {
+            // Keyboard navigation - launch the selected app / move the
+            // selection around the grid. These don't change the search text,
+            // so they return early before the re-filter below.
+            Key::Named(NamedKey::Enter) => {
+                self.launch_selected(event_loop);
+                return;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.move_selection(-1, 0);
+                return;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.move_selection(1, 0);
+                return;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.move_selection(0, -1);
+                return;
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.move_selection(0, 1);
+                return;
+            }
             Key::Named(NamedKey::Backspace) => {
                 self.search.pop();
             }
